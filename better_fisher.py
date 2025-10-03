@@ -298,71 +298,90 @@ def prime_to_Z2_then_Z3_with_anti_stall():
 # ---------------------- 分阶段四点状态机（>10s为Z3-0.8s节律） ----------------------
 def reel_with_timer(tension_start_ts):
     """
-    Phase A：0 ~ 10 s → Z2 ↔ Z3 循环（原逻辑）
-    Phase B：第一次满足“elapsed > 10 s 且 Z2=黄”后，
-             进入固定节奏：Z3 拉一下 → 松 0.8 s → 再拉…
+    Phase A（0-10 s） : Z2 ↔ Z3 状态机（与之前一致）
+    Phase B（>10 s 且此刻 Z2=黄） : 固定节奏
+        while True:
+            mouse_down  → 拉到 Z3 黄
+            mouse_up    → 松线 0.8 s
+    注：进入 B 时【先拉一次到 Z3】再开始 0.8 s 节拍，避免指针直接掉到 Z1。
     """
     if not tension_gauge_visible_any():
         return True
 
-    state = 'RELEASING'          # Phase A 状态机
-    phaseB = False               # 是否已进入 B
-    log("进入循环：Phase A = Z2↔Z3；满足(>10s & Z2黄) 切到 Phase B = Z3-0.8s")
+    state  = 'RELEASING'     # Phase A 状态机
+    phaseB = False           # 是否已切到 B
+    first_B_cycle = True     # B 阶段首次循环标记
+    log("进入循环：Phase A = Z2↔Z3；满足(>10 s & Z2黄) → Phase B = Z3-0.8 s 节拍")
 
     while True:
+        # ------------ 公共退出判定 ------------
         if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
         if not tension_gauge_visible_any():
-            log("拉力盘消失（由外层判断是否成功/空军）"); return True
+            log("拉力盘消失（由外层判断成功 / 空军）"); return True
 
+        # 读取 4 点颜色 & 时间
         c1 = pg.pixel(*CFG.tick_coords[1])
         c2 = pg.pixel(*CFG.tick_coords[2])
         c3 = pg.pixel(*CFG.tick_coords[3])
         c4 = pg.pixel(*CFG.tick_coords[4])
         elapsed = time.time() - tension_start_ts
 
-        # ------------ Phase B：固定节奏 ------------
+        # ------------ Phase B : 固定节奏 ------------
         if phaseB:
+            # 第一次进入 B：先拉到 Z3；之后循环：拉到 Z3 → 松 0.8 s
+            if first_B_cycle:
+                first_B_cycle = False          # 只在首次拉一次
+            else:
+                time.sleep(0.8)                # 松 0.8 s
+
             # 收线到 Z3
             mouse_down()
             try:
                 while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
                     if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
                     if not tension_gauge_visible_any(): return True
-                    # 收线时 Z1 防卡死
+                    # 收线 Z1 卡死保护
                     if is_color_yellow(pg.pixel(*CFG.tick_coords[1])):
                         mouse_up(); time.sleep(0.5); mouse_down()
+                    # 收线 Z4 越界（理论上不会发生，但保留保险）
+                    if is_color_yellow(pg.pixel(*CFG.tick_coords[4])):
+                        break
                     time.sleep(0.02)
             finally:
                 mouse_up()
+            continue  # B 阶段固定节拍循环
 
-            time.sleep(0.8)      # 松线固定 0.8 s
-            continue             # 下一次循环
-
-        # ------------ Phase A：原四点状态机 ------------
-        # 满足进入 B 的触发条件
+        # ------------ Phase A : 原四点状态机 ------------
+        # 满足 (>10 s & Z2 黄) → 立即切到 Phase B
         if (not phaseB) and (elapsed > 10.0) and is_color_yellow(c2):
-            log("满足 (>10s & Z2=黄) → 切换到 Phase B（Z3-0.8s 节律）")
+            log("满足 (>10 s & Z2=黄) → 进入 Phase B（Z3-0.8 s 节拍）")
             phaseB = True
-            mouse_up()           # 确保先松线
-            time.sleep(0.8)      # 立即进入第一次松线节奏
+            first_B_cycle = True  # 进入 B 后马上拉第一次
             continue
 
+        # ---------- 以下为 Phase A 原逻辑 ----------
         if state == 'RELEASING':
-            if is_color_yellow(c1):        # 放线 Z1 救援
+            # 放线 Z1 救援
+            if is_color_yellow(c1):
                 mouse_down()
                 while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
                     if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
                     if not tension_gauge_visible_any(): return True
                     time.sleep(0.02)
                 mouse_up(); continue
-            if is_color_yellow(c2):        # 正常切换到收线
+            # 正常放到 Z2 → 收线
+            if is_color_yellow(c2):
                 mouse_down(); state = 'REELING'
+
         else:  # REELING
-            if is_color_yellow(c1):        # 收线 Z1 卡死
+            # 收线 Z1 卡死
+            if is_color_yellow(c1):
                 mouse_up(); time.sleep(0.5); mouse_down(); continue
+            # Z3 → 放线
             if is_color_yellow(c3):
                 mouse_up(); state = 'RELEASING'
-            elif is_color_yellow(c4):      # Z4 刹车
+            # Z4 → 刹车放到 Z2
+            elif is_color_yellow(c4):
                 mouse_up()
                 while not is_color_yellow(pg.pixel(*CFG.tick_coords[2])):
                     if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
@@ -371,6 +390,7 @@ def reel_with_timer(tension_start_ts):
                 mouse_down(); state = 'REELING'
 
         time.sleep(0.02)
+
 
 
 # ---------------------- 单轮流程 ----------------------
