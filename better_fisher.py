@@ -1,14 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-PA Fishing 
-- 出现拉力盘后：拉到Z2→停0.5s→拉到Z3（松）→进入收线循环
-- 10秒计时分阶段：
-  * Phase A（0~10s）：Z2↔Z3循环（放线只看Z1/Z2；收线只看Z3/Z4）
-  * Phase B（>10s）：不再检测Z2；放线触达Z2即“拉到Z3→停0.5s→松”形成Z3-0.5s节律
-- 全程Z1防卡死：收线Z1黄→松0.5s继续；放线Z1黄→立即改为收线直达Z3
-- 成功判定修复：必须“拉力盘消失 且 提示框出现”；否则为空军
-- 收鱼：循环“按住式”点击直至提示框消失（最多10次）
-"""
 
 import time, threading, ctypes
 from dataclasses import dataclass
@@ -22,7 +12,7 @@ import win32gui, win32con
 import tkinter as tk
 import keyboard
 
-# ---------------------- 鼠标控制（双保险） ----------------------
+# ---------------------- 低级鼠标控制（双保险） ----------------------
 SendInput = ctypes.windll.user32.SendInput
 PUL = ctypes.POINTER(ctypes.c_ulong)
 class MOUSEINPUT(ctypes.Structure):
@@ -55,13 +45,13 @@ class Cfg:
         3: (961,  929),  # Z3
         4: (1048, 951),  # Z4
     }
-    # 鱼桶可见判定：顶部两黄 + 底部两米白
+    # 鱼桶“可见”判定：顶部两黄 + 底部两米白（4点需同时满足）
     bucket_coords = {
         "top":    [(1479, 336), (1768, 337)],
         "bottom": [(1449, 878), (1814, 880)],
     }
-    # 鱼桶将满（三白像素）
-    bucket_full_coords = [(1679,820), (1677,824), (1680,824)]
+    # 鱼桶“将满”单点新规则（本轮成功后退出）
+    bucket_flag_coord = (1680, 821)   # 若此点不为指定米色，则本轮成功后退出
     # 成功黄色提示框
     banner_coords = [(1200, 65), (1210, 153)]
     recalc_every = 12
@@ -131,7 +121,7 @@ WHITE_SAMPLES        = [_hex_to_rgb(x) for x in ("#dee1c5","#dee1cd","#dee2ca","
 BANNER_YELLOWS       = [_hex_to_rgb(x) for x in ("#ffe84f", "#ffe952")]              # 上鱼提示框黄
 BUCKET_TOP_YELLOWS   = [_hex_to_rgb(x) for x in ("#fbd560","#fcd35f","#fbd35e","#f9d460")]
 BUCKET_BOT_BEIGES    = [_hex_to_rgb(x) for x in ("#f4e3bb","#f3e3bb","#f2e2ba","#f3e2ba")]
-BUCKET_FULL_WHITES   = [_hex_to_rgb(x) for x in ("#fbfafa", "#fafafa", "#fbfbfa")]
+BUCKET_FLAG_OK       = [_hex_to_rgb(x) for x in ("#eed8a9", "#eed7a8", "#efd8a9")]   # 桶“未满”的参考米色
 
 def is_color_yellow(rgb):
     if _near(rgb, YELLOW_SAMPLES, tol=90): return True
@@ -142,7 +132,7 @@ def is_color_white(rgb):
 def _is_banner_yellow(rgb):     return _near(rgb, BANNER_YELLOWS,     tol=80)
 def is_bucket_top_yellow(rgb):  return _near(rgb, BUCKET_TOP_YELLOWS, tol=85)
 def is_bucket_bot_beige(rgb):   return _near(rgb, BUCKET_BOT_BEIGES,  tol=85)
-def _is_bucket_full_white(rgb): return _near(rgb, BUCKET_FULL_WHITES, tol=80)
+def is_bucket_flag_ok(rgb):     return _near(rgb, BUCKET_FLAG_OK,      tol=70)  # 可按显示器略调 60~80
 
 # ---------------------- 基础像素读数/判定 ----------------------
 def get_tick_colors():
@@ -182,7 +172,7 @@ def wait_banner_disappear(stable=3):
         if miss >= stable: return True
         time.sleep(0.05)
 
-# ---- 鱼桶（可见/满） ----
+# ---- 鱼桶（可见/将满） ----
 def bucket_visible_once():
     try:
         t1 = pg.pixel(*CFG.bucket_coords["top"][0])
@@ -210,16 +200,13 @@ def wait_bucket_disappear(timeout=None, stable=3):
         if miss >= stable: log("鱼桶消失 → 咬钩!"); return True
         time.sleep(0.05)
 
-def bucket_full_once():
+def bucket_flag_ok_once():
+    """单点(1680,821)是否为“正常（未满）米色”"""
     try:
-        c1 = pg.pixel(*CFG.bucket_full_coords[0])
-        c2 = pg.pixel(*CFG.bucket_full_coords[1])
-        c3 = pg.pixel(*CFG.bucket_full_coords[2])
+        rgb = pg.pixel(*CFG.bucket_flag_coord)
     except Exception:
-        return False
-    ok = _is_bucket_full_white(c1) and _is_bucket_full_white(c2) and _is_bucket_full_white(c3)
-    if ok: log(f"检测到桶满 RGB:{c1} {c2} {c3}")
-    return ok
+        return True  # 读不到则不拦截
+    return is_bucket_flag_ok(rgb)
 
 # ---------------------- 基础动作 ----------------------
 def cast(wrect):
@@ -267,8 +254,17 @@ def collect_fish(win_rect, press_hold=0.08):
     pg.mouseDown(button='left'); time.sleep(press_hold); pg.mouseUp(button='left')
     time.sleep(0.15)
 
-# ---------------------- 对中：出现拉力盘后先 Z2→停0.5→Z3 ----------------------
+# ---------------------- 对中：出现拉力盘后先 Z2→停0.5→Z3（含早退成功判断与Z1防卡死） ----------------------
 def prime_to_Z2_then_Z3_with_anti_stall():
+    def early_disappear_judgement(tag: str):
+        log(f"{tag}途中拉力盘消失 → 等1秒判断是否上鱼")
+        time.sleep(1.0)
+        if banner_visible_once():
+            log("拉力盘提前消失但检测到黄框 → 已上鱼")
+            return "SUCCESS_EARLY"
+        log("拉力盘提前消失且无黄框 → 空军")
+        return False
+
     log("对中阶段：拉到 Z2 → 停 0.5 s → 拉到 Z3 …")
     # → Z2
     mouse_down()
@@ -287,14 +283,8 @@ def prime_to_Z2_then_Z3_with_anti_stall():
             else:
                 z1_stuck_since = None
             if not tension_gauge_visible_any():
-                log("对中到Z2途中拉力盘消失")
-                time.sleep(1.0) 
-                if banner_visible_once(): 
-                 log("拉力盘提前消失但检测到黄框 → 已上鱼")
-                 return "SUCCESS_EARLY"
-                else:
-                 log("拉力盘提前消失且无黄框 → 判空军")
-                 return False
+                mouse_up()
+                return early_disappear_judgement("对中到Z2")
             time.sleep(0.02)
     finally:
         mouse_up()
@@ -307,14 +297,8 @@ def prime_to_Z2_then_Z3_with_anti_stall():
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
             if is_color_yellow(pg.pixel(*CFG.tick_coords[3])): break
             if not tension_gauge_visible_any():
-                log("对中到Z3途中拉力盘消失")
-                time.sleep(1.0) 
-                if banner_visible_once(): 
-                 log("拉力盘提前消失但检测到黄框 → 已上鱼")
-                 return "SUCCESS_EARLY"
-                else:
-                 log("拉力盘提前消失且无黄框 → 判空军")
-                 return False
+                mouse_up()
+                return early_disappear_judgement("对中到Z3")
             time.sleep(0.02)
     finally:
         mouse_up()
@@ -323,11 +307,6 @@ def prime_to_Z2_then_Z3_with_anti_stall():
 
 # ---------------------- 分阶段四点状态机（带10s计时） ----------------------
 def reel_with_timer(tension_start_ts):
-    """
-    返回值：
-      True  -> 拉力盘消失（可能成功也可能空军，由外层结合提示框判断）
-      False -> 过程提前失败（例如异常/退出）
-    """
     if not tension_gauge_visible_any():
         return True
 
@@ -362,11 +341,9 @@ def reel_with_timer(tension_start_ts):
                 continue
 
             if phaseA:
-                # Phase A：标准Z2触发收线
                 if is_color_yellow(c2):
                     log("Z2=黄 → 切【收线】"); state='REELING'; mouse_down()
             else:
-                # Phase B：不再检测Z2；触达Z2就“拉到Z3→停0.5→松”，保持Z3节律
                 if is_color_yellow(c2):
                     log("Phase B：Z2 命中 → 拉到Z3→停0.5→松")
                     mouse_down()
@@ -378,9 +355,8 @@ def reel_with_timer(tension_start_ts):
                     finally:
                         mouse_up()
                     time.sleep(0.5)
-                    # 继续放线等待下一次节律触发
         else:
-            # 收线时Z1防卡死：暂停0.5s再继续
+            # 收线时Z1防卡死
             if is_color_yellow(c1):
                 log("Z1=黄（收线卡死保护）→ 暂停0.5s继续")
                 mouse_up(); time.sleep(0.5); mouse_down(); time.sleep(0.02)
@@ -389,8 +365,7 @@ def reel_with_timer(tension_start_ts):
             if is_color_yellow(c3):
                 log("Z3=黄 → 切【放线】"); state='RELEASING'; mouse_up()
             elif is_color_yellow(c4):
-                log("Z4=黄（越界）→ 放线到 Z2")
-                mouse_up()
+                log("Z4=黄（越界）→ 放线到 Z2"); mouse_up()
                 while not is_color_yellow(pg.pixel(*CFG.tick_coords[2])):
                     if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
                     if not tension_gauge_visible_any(): return True
@@ -421,10 +396,11 @@ def fish_one_round(win_rect):
         if not wait_bucket_visible(timeout=2.0, stable=2):
             log("两次调桶都未见到鱼桶 → 放弃本轮"); return False
 
-    # 2.1) 出现就检测“将满”
-    if bucket_full_once():
-        log("检测到鱼桶已满 → 程序结束")
-        return 'FULL'
+    # 2.1) 调桶出现 → 单点(1680,821)检查“将满”标志
+    stop_after_success = False
+    if not bucket_flag_ok_once():
+        stop_after_success = True
+        log("⚠ 检测到鱼桶将满标志：本轮若成功上鱼，将停止脚本")
 
     # 3) 等桶消失（咬钩）
     wait_bucket_disappear(stable=3)
@@ -434,26 +410,27 @@ def fish_one_round(win_rect):
         return False
     tension_start_ts = time.time()
 
-    # 5) 对中：Z2→停0.5→Z3
+    # 5) 对中：Z2→停0.5→Z3（含早退成功判断）
     prime_res = prime_to_Z2_then_Z3_with_anti_stall()
     if prime_res == "SUCCESS_EARLY":
-     pass
+        pass
     elif not prime_res:
-     return False
+        return False
 
     # 6) 分阶段收线（直到拉力盘消失）
-    if not reel_with_timer(tension_start_ts):
-        return False
+    if prime_res != "SUCCESS_EARLY":
+        if not reel_with_timer(tension_start_ts):
+            return False
 
-    # 7) 成功判定：拉力盘已消失 → 必须出现黄色提示框，否则为空军
+    # 7) 成功/空军判定：拉力盘消失后固定等1s再看提示框
     time.sleep(1.0)
     if not banner_visible_once():
-        log("拉力盘消失1秒未出现提示框 → 空军")
+        log("拉力盘消失 1 秒仍无提示框 → 空军")
         return False
-
-    # 8) 收鱼：循环点击直到提示框消失（最多10次）
     wait_banner_visible(timeout=2.0, stable=2)
     log("检测到黄色提示框 → 开始收鱼")
+
+    # 8) 收鱼：循环点击直到提示框消失（最多10次）
     for _ in range(10):
         if not banner_visible_once(): break
         collect_fish(win_rect, press_hold=0.08)
@@ -462,6 +439,12 @@ def fish_one_round(win_rect):
         log("⚠️ 多次点击仍未收鱼成功，请检查提示框坐标/阈值")
         return False
     log("提示框已消失 → 收鱼完成")
+
+    # 9) 若本轮前检测到“将满”，成功收鱼后停止脚本
+    if stop_after_success:
+        log("鱼桶已满 → 停止脚本")
+        return 'STOP_AFTER_SUCCESS'
+
     return True
 
 # ---------------------- 主程序 ----------------------
@@ -477,8 +460,7 @@ def main():
         while True:
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
             res = fish_one_round(win_rect)
-            if res == 'FULL':
-                log("鱼桶满 → 结束全部钓鱼")
+            if res == 'STOP_AFTER_SUCCESS':
                 break
             total += 1; succ += 1 if res else 0
             log(f"本次{'成功' if res else '空军'} | 累计 {succ}/{total} = {succ/total*100:.1f}%")
