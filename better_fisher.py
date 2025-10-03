@@ -429,6 +429,7 @@ def fish_one_round(win_rect):
         return False
 
     # 7) 成功判定：拉力盘已消失 → 必须出现黄色提示框，否则为空军
+    time.sleep(0.8)
     if not wait_banner_visible(timeout=3.0, stable=2):
         log("拉力盘消失但未出现提示框 → 空军")
         return False
