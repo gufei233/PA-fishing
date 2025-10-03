@@ -287,7 +287,14 @@ def prime_to_Z2_then_Z3_with_anti_stall():
             else:
                 z1_stuck_since = None
             if not tension_gauge_visible_any():
-                log("对中到Z2途中拉力盘消失"); return False
+                log("对中到Z2途中拉力盘消失")
+                time.sleep(1.0) 
+                if banner_visible_once(): 
+                 log("拉力盘提前消失但检测到黄框 → 已上鱼")
+                 return "SUCCESS_EARLY"
+                else:
+                 log("拉力盘提前消失且无黄框 → 判空军")
+                 return False
             time.sleep(0.02)
     finally:
         mouse_up()
@@ -300,7 +307,14 @@ def prime_to_Z2_then_Z3_with_anti_stall():
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
             if is_color_yellow(pg.pixel(*CFG.tick_coords[3])): break
             if not tension_gauge_visible_any():
-                log("对中到Z3途中拉力盘消失"); return False
+                log("对中到Z3途中拉力盘消失")
+                time.sleep(1.0) 
+                if banner_visible_once(): 
+                 log("拉力盘提前消失但检测到黄框 → 已上鱼")
+                 return "SUCCESS_EARLY"
+                else:
+                 log("拉力盘提前消失且无黄框 → 判空军")
+                 return False
             time.sleep(0.02)
     finally:
         mouse_up()
@@ -421,8 +435,11 @@ def fish_one_round(win_rect):
     tension_start_ts = time.time()
 
     # 5) 对中：Z2→停0.5→Z3
-    if not prime_to_Z2_then_Z3_with_anti_stall():
-        return False
+    prime_res = prime_to_Z2_then_Z3_with_anti_stall()
+    if prime_res == "SUCCESS_EARLY":
+     pass
+    elif not prime_res:
+     return False
 
     # 6) 分阶段收线（直到拉力盘消失）
     if not reel_with_timer(tension_start_ts):
