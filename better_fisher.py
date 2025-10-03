@@ -12,7 +12,7 @@ import win32gui, win32con
 import tkinter as tk
 import keyboard
 
-# ---------------------- 低级鼠标控制（双保险） ----------------------
+# ---------------------- SendInput 双通道点击 ----------------------
 SendInput = ctypes.windll.user32.SendInput
 PUL = ctypes.POINTER(ctypes.c_ulong)
 class MOUSEINPUT(ctypes.Structure):
@@ -38,22 +38,23 @@ def mouse_up():
 class Cfg:
     title = "猛兽派对"
     exit_key = 'q'
-    # 四个张力盘坐标（1920×1080）
+    # 张力盘四点（1920×1080）
     tick_coords = {
         1: (808, 1016),  # Z1
         2: (872,  952),  # Z2
         3: (961,  929),  # Z3
         4: (1048, 951),  # Z4
     }
-    # 鱼桶“可见”判定：顶部两黄 + 底部两米白（4点需同时满足）
+    # 鱼桶“可见”判定（上2黄、下2米白）
     bucket_coords = {
         "top":    [(1479, 336), (1768, 337)],
         "bottom": [(1449, 878), (1814, 880)],
     }
-    # 鱼桶“将满”单点新规则（本轮成功后退出）
-    bucket_flag_coord = (1680, 821)   # 若此点不为指定米色，则本轮成功后退出
-    # 成功黄色提示框
+    # 上鱼黄色提示框（2 点同时黄）
     banner_coords = [(1200, 65), (1210, 153)]
+    # 成功X条后自动停止
+    stop_after_n_success = 16
+    # 其它
     recalc_every = 12
     overlay_click_through = True
 CFG = Cfg()
@@ -115,13 +116,12 @@ def _rgb2hsv(rgb):
     hsv = cv.cvtColor(arr, cv.COLOR_RGB2HSV)[0,0]
     return tuple(int(x) for x in hsv)
 
-# —— 颜色样本 ——
-YELLOW_SAMPLES       = [_hex_to_rgb(x) for x in ("#ffaa29","#ffb63f","#ffaa2b")]     # 张力盘指针黄
+# —— 色样本 ——
+YELLOW_SAMPLES       = [_hex_to_rgb(x) for x in ("#ffaa29","#ffb63f","#ffaa2b")]
 WHITE_SAMPLES        = [_hex_to_rgb(x) for x in ("#dee1c5","#dee1cd","#dee2ca","#f7f3de","#f7f4e4")]
-BANNER_YELLOWS       = [_hex_to_rgb(x) for x in ("#ffe84f", "#ffe952")]              # 上鱼提示框黄
+BANNER_YELLOWS       = [_hex_to_rgb(x) for x in ("#ffe84f","#ffe952")]
 BUCKET_TOP_YELLOWS   = [_hex_to_rgb(x) for x in ("#fbd560","#fcd35f","#fbd35e","#f9d460")]
 BUCKET_BOT_BEIGES    = [_hex_to_rgb(x) for x in ("#f4e3bb","#f3e3bb","#f2e2ba","#f3e2ba")]
-BUCKET_FLAG_OK       = [_hex_to_rgb(x) for x in ("#eed8a9", "#eed7a8", "#efd8a9")]   # 桶“未满”的参考米色
 
 def is_color_yellow(rgb):
     if _near(rgb, YELLOW_SAMPLES, tol=90): return True
@@ -132,9 +132,8 @@ def is_color_white(rgb):
 def _is_banner_yellow(rgb):     return _near(rgb, BANNER_YELLOWS,     tol=80)
 def is_bucket_top_yellow(rgb):  return _near(rgb, BUCKET_TOP_YELLOWS, tol=85)
 def is_bucket_bot_beige(rgb):   return _near(rgb, BUCKET_BOT_BEIGES,  tol=85)
-def is_bucket_flag_ok(rgb):     return _near(rgb, BUCKET_FLAG_OK,      tol=70)  # 可按显示器略调 60~80
 
-# ---------------------- 基础像素读数/判定 ----------------------
+# ---------------------- 判定工具 ----------------------
 def get_tick_colors():
     try: return {i: pg.pixel(x,y) for i,(x,y) in CFG.tick_coords.items()}
     except: return {1:(0,0,0),2:(0,0,0),3:(0,0,0),4:(0,0,0)}
@@ -146,7 +145,6 @@ def tension_gauge_visible_any():
 def tension_gauge_start_by_Z1():
     return is_color_yellow(pg.pixel(*CFG.tick_coords[1]))
 
-# ---- 成功提示框 ----
 def banner_visible_once():
     try:
         c1 = pg.pixel(*CFG.banner_coords[0])
@@ -172,8 +170,8 @@ def wait_banner_disappear(stable=3):
         if miss >= stable: return True
         time.sleep(0.05)
 
-# ---- 鱼桶（可见/将满） ----
 def bucket_visible_once():
+    """鱼桶可见：顶部两黄、底部两米白"""
     try:
         t1 = pg.pixel(*CFG.bucket_coords["top"][0])
         t2 = pg.pixel(*CFG.bucket_coords["top"][1])
@@ -199,14 +197,6 @@ def wait_bucket_disappear(timeout=None, stable=3):
         miss = miss+1 if not bucket_visible_once() else 0
         if miss >= stable: log("鱼桶消失 → 咬钩!"); return True
         time.sleep(0.05)
-
-def bucket_flag_ok_once():
-    """单点(1680,821)是否为“正常（未满）米色”"""
-    try:
-        rgb = pg.pixel(*CFG.bucket_flag_coord)
-    except Exception:
-        return True  # 读不到则不拦截
-    return is_bucket_flag_ok(rgb)
 
 # ---------------------- 基础动作 ----------------------
 def cast(wrect):
@@ -254,7 +244,7 @@ def collect_fish(win_rect, press_hold=0.08):
     pg.mouseDown(button='left'); time.sleep(press_hold); pg.mouseUp(button='left')
     time.sleep(0.15)
 
-# ---------------------- 对中：出现拉力盘后先 Z2→停0.5→Z3（含早退成功判断与Z1防卡死） ----------------------
+# ---------------------- 对中：Z2→停0.8→Z3（含早退成功判定与Z1防卡死） ----------------------
 def prime_to_Z2_then_Z3_with_anti_stall():
     def early_disappear_judgement(tag: str):
         log(f"{tag}途中拉力盘消失 → 等1秒判断是否上鱼")
@@ -265,7 +255,7 @@ def prime_to_Z2_then_Z3_with_anti_stall():
         log("拉力盘提前消失且无黄框 → 空军")
         return False
 
-    log("对中阶段：拉到 Z2 → 停 0.5 s → 拉到 Z3 …")
+    log("对中阶段：拉到 Z2 → 停 0.8 s → 拉到 Z3 …")
     # → Z2
     mouse_down()
     z1_stuck_since = None
@@ -273,7 +263,7 @@ def prime_to_Z2_then_Z3_with_anti_stall():
         while True:
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
             if is_color_yellow(pg.pixel(*CFG.tick_coords[2])): break
-            # 收线卡死保护（Z1黄持续>0.7s）
+            # 收线卡死保护：Z1黄持续>0.7s，松0.5s再继续
             if is_color_yellow(pg.pixel(*CFG.tick_coords[1])):
                 z1_stuck_since = z1_stuck_since or time.time()
                 if time.time() - z1_stuck_since > 0.7:
@@ -288,7 +278,7 @@ def prime_to_Z2_then_Z3_with_anti_stall():
             time.sleep(0.02)
     finally:
         mouse_up()
-    time.sleep(0.5)
+    time.sleep(0.8)
 
     # → Z3
     mouse_down()
@@ -305,83 +295,83 @@ def prime_to_Z2_then_Z3_with_anti_stall():
     log("已到 Z3，松线进入循环")
     return True
 
-# ---------------------- 分阶段四点状态机（带10s计时） ----------------------
+# ---------------------- 分阶段四点状态机（>10s为Z3-0.8s节律） ----------------------
 def reel_with_timer(tension_start_ts):
+    """
+    Phase A：0 ~ 10 s → Z2 ↔ Z3 循环（原逻辑）
+    Phase B：第一次满足“elapsed > 10 s 且 Z2=黄”后，
+             进入固定节奏：Z3 拉一下 → 松 0.8 s → 再拉…
+    """
     if not tension_gauge_visible_any():
         return True
 
-    state = 'RELEASING'  # 初始从Z3松线开始
-    log("进入循环：Phase A（0~10s）为 Z2↔Z3；Phase B（>10s）为 Z3-0.5s 节律")
+    state = 'RELEASING'          # Phase A 状态机
+    phaseB = False               # 是否已进入 B
+    log("进入循环：Phase A = Z2↔Z3；满足(>10s & Z2黄) 切到 Phase B = Z3-0.8s")
 
     while True:
         if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
         if not tension_gauge_visible_any():
             log("拉力盘消失（由外层判断是否成功/空军）"); return True
 
-        elapsed = time.time() - tension_start_ts
-        phaseA = (elapsed <= 10.0)
-
         c1 = pg.pixel(*CFG.tick_coords[1])
         c2 = pg.pixel(*CFG.tick_coords[2])
         c3 = pg.pixel(*CFG.tick_coords[3])
         c4 = pg.pixel(*CFG.tick_coords[4])
+        elapsed = time.time() - tension_start_ts
+
+        # ------------ Phase B：固定节奏 ------------
+        if phaseB:
+            # 收线到 Z3
+            mouse_down()
+            try:
+                while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
+                    if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
+                    if not tension_gauge_visible_any(): return True
+                    # 收线时 Z1 防卡死
+                    if is_color_yellow(pg.pixel(*CFG.tick_coords[1])):
+                        mouse_up(); time.sleep(0.5); mouse_down()
+                    time.sleep(0.02)
+            finally:
+                mouse_up()
+
+            time.sleep(0.8)      # 松线固定 0.8 s
+            continue             # 下一次循环
+
+        # ------------ Phase A：原四点状态机 ------------
+        # 满足进入 B 的触发条件
+        if (not phaseB) and (elapsed > 10.0) and is_color_yellow(c2):
+            log("满足 (>10s & Z2=黄) → 切换到 Phase B（Z3-0.8s 节律）")
+            phaseB = True
+            mouse_up()           # 确保先松线
+            time.sleep(0.8)      # 立即进入第一次松线节奏
+            continue
 
         if state == 'RELEASING':
-            # 放线时Z1防卡死：立刻救援直到Z3
-            if is_color_yellow(c1):
-                log("Z1=黄（放线救援）→ 立刻收到 Z3")
+            if is_color_yellow(c1):        # 放线 Z1 救援
                 mouse_down()
-                try:
-                    while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
-                        if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
-                        if not tension_gauge_visible_any(): return True
-                        time.sleep(0.02)
-                finally:
-                    mouse_up()
-                continue
-
-            if phaseA:
-                if is_color_yellow(c2):
-                    log("Z2=黄 → 切【收线】"); state='REELING'; mouse_down()
-            else:
-                if is_color_yellow(c2):
-                    log("Phase B：Z2 命中 → 拉到Z3→停0.5→松")
-                    mouse_down()
-                    try:
-                        while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
-                            if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
-                            if not tension_gauge_visible_any(): return True
-                            time.sleep(0.02)
-                    finally:
-                        mouse_up()
-                    time.sleep(0.5)
-        else:
-            # 收线时Z1防卡死
-            if is_color_yellow(c1):
-                log("Z1=黄（收线卡死保护）→ 暂停0.5s继续")
-                mouse_up(); time.sleep(0.5); mouse_down(); time.sleep(0.02)
-                continue
-
+                while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
+                    if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
+                    if not tension_gauge_visible_any(): return True
+                    time.sleep(0.02)
+                mouse_up(); continue
+            if is_color_yellow(c2):        # 正常切换到收线
+                mouse_down(); state = 'REELING'
+        else:  # REELING
+            if is_color_yellow(c1):        # 收线 Z1 卡死
+                mouse_up(); time.sleep(0.5); mouse_down(); continue
             if is_color_yellow(c3):
-                log("Z3=黄 → 切【放线】"); state='RELEASING'; mouse_up()
-            elif is_color_yellow(c4):
-                log("Z4=黄（越界）→ 放线到 Z2"); mouse_up()
+                mouse_up(); state = 'RELEASING'
+            elif is_color_yellow(c4):      # Z4 刹车
+                mouse_up()
                 while not is_color_yellow(pg.pixel(*CFG.tick_coords[2])):
                     if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
                     if not tension_gauge_visible_any(): return True
                     time.sleep(0.02)
-                if phaseA:
-                    log("到 Z2 → 继续【收线】"); state='REELING'; mouse_down()
-                else:
-                    log("Phase B：Z2 → 拉到Z3→停0.5→松")
-                    mouse_down()
-                    while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
-                        if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
-                        if not tension_gauge_visible_any(): return True
-                        time.sleep(0.02)
-                    mouse_up(); time.sleep(0.5)
+                mouse_down(); state = 'REELING'
 
         time.sleep(0.02)
+
 
 # ---------------------- 单轮流程 ----------------------
 def fish_one_round(win_rect):
@@ -396,12 +386,6 @@ def fish_one_round(win_rect):
         if not wait_bucket_visible(timeout=2.0, stable=2):
             log("两次调桶都未见到鱼桶 → 放弃本轮"); return False
 
-    # 2.1) 调桶出现 → 单点(1680,821)检查“将满”标志
-    stop_after_success = False
-    if not bucket_flag_ok_once():
-        stop_after_success = True
-        log("⚠ 检测到鱼桶将满标志：本轮若成功上鱼，将停止脚本")
-
     # 3) 等桶消失（咬钩）
     wait_bucket_disappear(stable=3)
 
@@ -410,7 +394,7 @@ def fish_one_round(win_rect):
         return False
     tension_start_ts = time.time()
 
-    # 5) 对中：Z2→停0.5→Z3（含早退成功判断）
+    # 5) 对中：Z2→停0.8→Z3（含早退成功判断）
     prime_res = prime_to_Z2_then_Z3_with_anti_stall()
     if prime_res == "SUCCESS_EARLY":
         pass
@@ -439,12 +423,6 @@ def fish_one_round(win_rect):
         log("⚠️ 多次点击仍未收鱼成功，请检查提示框坐标/阈值")
         return False
     log("提示框已消失 → 收鱼完成")
-
-    # 9) 若本轮前检测到“将满”，成功收鱼后停止脚本
-    if stop_after_success:
-        log("鱼桶已满 → 停止脚本")
-        return 'STOP_AFTER_SUCCESS'
-
     return True
 
 # ---------------------- 主程序 ----------------------
@@ -460,10 +438,15 @@ def main():
         while True:
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
             res = fish_one_round(win_rect)
-            if res == 'STOP_AFTER_SUCCESS':
-                break
-            total += 1; succ += 1 if res else 0
+            total += 1
+            if res: succ += 1
             log(f"本次{'成功' if res else '空军'} | 累计 {succ}/{total} = {succ/total*100:.1f}%")
+
+            # 成功 X 条后自动停止
+            if succ >= CFG.stop_after_n_success:
+                log(f"已成功 {succ} 条，达到阈值 {CFG.stop_after_n_success} → 停止脚本")
+                break
+
             if total % CFG.recalc_every == 0:
                 win_rect = get_win_rect()
     except KeyboardInterrupt:
