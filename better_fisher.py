@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+"""
+PA Fishing 
+- 出现拉力盘后：拉到Z2→停0.5s→拉到Z3（松）→进入收线循环
+- 10秒计时分阶段：
+  * Phase A（0~10s）：Z2↔Z3循环（放线只看Z1/Z2；收线只看Z3/Z4）
+  * Phase B（>10s）：不再检测Z2；放线触达Z2即“拉到Z3→停0.5s→松”形成Z3-0.5s节律
+- 全程Z1防卡死：收线Z1黄→松0.5s继续；放线Z1黄→立即改为收线直达Z3
+- 成功判定修复：必须“拉力盘消失 且 提示框出现”；否则为空军
+- 收鱼：循环“按住式”点击直至提示框消失（最多10次）
+"""
 
 import time, threading, ctypes
 from dataclasses import dataclass
@@ -12,7 +22,7 @@ import win32gui, win32con
 import tkinter as tk
 import keyboard
 
-# ---------------------- 低级鼠标控制（双保险） ----------------------
+# ---------------------- 鼠标控制（双保险） ----------------------
 SendInput = ctypes.windll.user32.SendInput
 PUL = ctypes.POINTER(ctypes.c_ulong)
 class MOUSEINPUT(ctypes.Structure):
@@ -38,7 +48,7 @@ def mouse_up():
 class Cfg:
     title = "猛兽派对"
     exit_key = 'q'
-    # 四个张力盘坐标（基于 1920×1080）
+    # 四个张力盘坐标（1920×1080）
     tick_coords = {
         1: (808, 1016),  # Z1
         2: (872,  952),  # Z2
@@ -50,9 +60,9 @@ class Cfg:
         "top":    [(1479, 336), (1768, 337)],
         "bottom": [(1449, 878), (1814, 880)],
     }
-    # 鱼桶容量将满（三白像素） → 结束
+    # 鱼桶将满（三白像素）
     bucket_full_coords = [(1679,820), (1677,824), (1680,824)]
-    # 成功黄色提示框像素
+    # 成功黄色提示框
     banner_coords = [(1200, 65), (1210, 153)]
     recalc_every = 12
     overlay_click_through = True
@@ -115,13 +125,13 @@ def _rgb2hsv(rgb):
     hsv = cv.cvtColor(arr, cv.COLOR_RGB2HSV)[0,0]
     return tuple(int(x) for x in hsv)
 
-# —— 张力盘与提示框色样本 ——
-YELLOW_SAMPLES = [_hex_to_rgb(x) for x in ("#ffaa29","#ffb63f","#ffaa2b")]
-WHITE_SAMPLES  = [_hex_to_rgb(x) for x in ("#dee1c5","#dee1cd","#dee2ca","#f7f3de","#f7f4e4")]
-BANNER_YELLOWS = [_hex_to_rgb(x) for x in ("#ffe84f", "#ffe952")]
-BUCKET_TOP_YELLOWS = [_hex_to_rgb(x) for x in ("#fbd560","#fcd35f","#fbd35e","#f9d460")]
-BUCKET_BOT_BEIGES  = [_hex_to_rgb(x) for x in ("#f4e3bb","#f3e3bb","#f2e2ba","#f3e2ba")]
-BUCKET_FULL_WHITES = [_hex_to_rgb(x) for x in ("#fbfafa", "#fafafa", "#fbfbfa")]
+# —— 颜色样本 ——
+YELLOW_SAMPLES       = [_hex_to_rgb(x) for x in ("#ffaa29","#ffb63f","#ffaa2b")]     # 张力盘指针黄
+WHITE_SAMPLES        = [_hex_to_rgb(x) for x in ("#dee1c5","#dee1cd","#dee2ca","#f7f3de","#f7f4e4")]
+BANNER_YELLOWS       = [_hex_to_rgb(x) for x in ("#ffe84f", "#ffe952")]              # 上鱼提示框黄
+BUCKET_TOP_YELLOWS   = [_hex_to_rgb(x) for x in ("#fbd560","#fcd35f","#fbd35e","#f9d460")]
+BUCKET_BOT_BEIGES    = [_hex_to_rgb(x) for x in ("#f4e3bb","#f3e3bb","#f2e2ba","#f3e2ba")]
+BUCKET_FULL_WHITES   = [_hex_to_rgb(x) for x in ("#fbfafa", "#fafafa", "#fbfbfa")]
 
 def is_color_yellow(rgb):
     if _near(rgb, YELLOW_SAMPLES, tol=90): return True
@@ -129,12 +139,12 @@ def is_color_yellow(rgb):
 def is_color_white(rgb):
     if _near(rgb, WHITE_SAMPLES, tol=70): return True
     r,g,b = rgb; return (r>=190 and g>=190 and b>=170) and (max(r,g,b)-min(r,g,b) <= 30)
-def _is_banner_yellow(rgb): return _near(rgb, BANNER_YELLOWS, tol=80)
+def _is_banner_yellow(rgb):     return _near(rgb, BANNER_YELLOWS,     tol=80)
 def is_bucket_top_yellow(rgb):  return _near(rgb, BUCKET_TOP_YELLOWS, tol=85)
 def is_bucket_bot_beige(rgb):   return _near(rgb, BUCKET_BOT_BEIGES,  tol=85)
 def _is_bucket_full_white(rgb): return _near(rgb, BUCKET_FULL_WHITES, tol=80)
 
-# ---------------------- 像素读数与判定 ----------------------
+# ---------------------- 基础像素读数/判定 ----------------------
 def get_tick_colors():
     try: return {i: pg.pixel(x,y) for i,(x,y) in CFG.tick_coords.items()}
     except: return {1:(0,0,0),2:(0,0,0),3:(0,0,0),4:(0,0,0)}
@@ -146,6 +156,7 @@ def tension_gauge_visible_any():
 def tension_gauge_start_by_Z1():
     return is_color_yellow(pg.pixel(*CFG.tick_coords[1]))
 
+# ---- 成功提示框 ----
 def banner_visible_once():
     try:
         c1 = pg.pixel(*CFG.banner_coords[0])
@@ -154,7 +165,7 @@ def banner_visible_once():
         return False
     return _is_banner_yellow(c1) and _is_banner_yellow(c2)
 
-def wait_banner_visible(timeout=4.0, stable=2):
+def wait_banner_visible(timeout=3.0, stable=2):
     ok, t0 = 0, time.time()
     while True:
         if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
@@ -171,8 +182,8 @@ def wait_banner_disappear(stable=3):
         if miss >= stable: return True
         time.sleep(0.05)
 
+# ---- 鱼桶（可见/满） ----
 def bucket_visible_once():
-    """鱼桶可见：顶部两黄、底部两米白同时满足"""
     try:
         t1 = pg.pixel(*CFG.bucket_coords["top"][0])
         t2 = pg.pixel(*CFG.bucket_coords["top"][1])
@@ -183,32 +194,23 @@ def bucket_visible_once():
     return is_bucket_top_yellow(t1) and is_bucket_top_yellow(t2) and is_bucket_bot_beige(b1) and is_bucket_bot_beige(b2)
 
 def wait_bucket_visible(timeout=5.0, stable=2):
-    ok, t0 = 0, time.time()
-    log("等待鱼桶出现…")
+    ok, t0 = 0, time.time(); log("等待鱼桶出现…")
     while True:
         if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
         ok = ok+1 if bucket_visible_once() else 0
-        if ok >= stable:
-            log("鱼桶已出现")
-            return True
-        if timeout and time.time()-t0 > timeout:
-            log("等待鱼桶出现超时")
-            return False
+        if ok >= stable: log("鱼桶已出现"); return True
+        if timeout and time.time()-t0 > timeout: log("等待鱼桶出现超时"); return False
         time.sleep(0.05)
 
 def wait_bucket_disappear(timeout=None, stable=3):
-    """无限等待鱼桶消失（咬钩）"""
     miss = 0; log("鱼桶已出现，等待其消失（无超时）…")
     while True:
         if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
         miss = miss+1 if not bucket_visible_once() else 0
-        if miss >= stable:
-            log("鱼桶消失 → 咬钩!")
-            return True
+        if miss >= stable: log("鱼桶消失 → 咬钩!"); return True
         time.sleep(0.05)
 
 def bucket_full_once():
-    """鱼桶容量满判定：三白像素同时满足"""
     try:
         c1 = pg.pixel(*CFG.bucket_full_coords[0])
         c2 = pg.pixel(*CFG.bucket_full_coords[1])
@@ -228,7 +230,6 @@ def cast(wrect):
     time.sleep(1.5)
 
 def show_bucket(wrect, *, hold_ms=500, swipe_ratio=0.30, use_drag=True):
-    """长按C + 左滑调桶"""
     focus_game()
     L,T,W,H = wrect
     start_x = L + int(0.80*W)
@@ -246,7 +247,6 @@ def show_bucket(wrect, *, hold_ms=500, swipe_ratio=0.30, use_drag=True):
     time.sleep(0.12)
 
 def ensure_tension_by_clicks(wrect, press_hold=0.06, interval=1.0, timeout=None):
-    """点按左键直至 Z1 变黄（拉力盘出现）"""
     cx, cy = (wrect[0] + wrect[2] // 2, wrect[1] + wrect[3] // 2)
     log("点按左键以触发拉力盘（Z1 变黄）…")
     start = time.time()
@@ -255,51 +255,78 @@ def ensure_tension_by_clicks(wrect, press_hold=0.06, interval=1.0, timeout=None)
         pg.moveTo(cx, cy, duration=0.01)
         pg.mouseDown(button='left'); time.sleep(press_hold); pg.mouseUp(button='left')
         for _ in range(int(interval / 0.05)):
-            if tension_gauge_start_by_Z1():
-                log("Z1 变黄 → 拉力盘出现"); return True
+            if tension_gauge_start_by_Z1(): log("Z1 变黄 → 拉力盘出现"); return True
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
             time.sleep(0.05)
         if timeout and (time.time() - start > timeout):
             log("超时：多次点按仍未出现拉力盘"); return False
 
-# ---------------------- 对中到 Z3（含Z1卡死保护） ----------------------
-def reel_to_Z3_then_release():
-    log("对中：按住收线直到 Z3 变黄 …")
+def collect_fish(win_rect, press_hold=0.08):
+    cx, cy = (win_rect[0]+win_rect[2]//2, win_rect[1]+win_rect[3]//2)
+    pg.moveTo(cx, cy, duration=0.01)
+    pg.mouseDown(button='left'); time.sleep(press_hold); pg.mouseUp(button='left')
+    time.sleep(0.15)
+
+# ---------------------- 对中：出现拉力盘后先 Z2→停0.5→Z3 ----------------------
+def prime_to_Z2_then_Z3_with_anti_stall():
+    log("对中阶段：拉到 Z2 → 停 0.5 s → 拉到 Z3 …")
+    # → Z2
     mouse_down()
     z1_stuck_since = None
     try:
         while True:
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
-            if is_color_yellow(pg.pixel(*CFG.tick_coords[3])): break
-            # 对中阶段Z1卡死保护：若Z1持续为黄 >0.7s，则松0.5s再继续
+            if is_color_yellow(pg.pixel(*CFG.tick_coords[2])): break
+            # 收线卡死保护（Z1黄持续>0.7s）
             if is_color_yellow(pg.pixel(*CFG.tick_coords[1])):
                 z1_stuck_since = z1_stuck_since or time.time()
                 if time.time() - z1_stuck_since > 0.7:
-                    log("Z1 卡死保护 → 松键0.5s后继续")
+                    log("Z1 卡死保护 → 松0.5s继续")
                     mouse_up(); time.sleep(0.5); mouse_down()
                     z1_stuck_since = time.time()
             else:
                 z1_stuck_since = None
             if not tension_gauge_visible_any():
-                log("对中阶段拉力盘消失 → 本轮结束"); return False
+                log("对中到Z2途中拉力盘消失"); return False
             time.sleep(0.02)
     finally:
         mouse_up()
-    log("已到 Z3，松线进入主循环"); return True
+    time.sleep(0.5)
 
-# ---------------------- 四点状态机 ----------------------
-def reel_per_rule():
-    log("进入四点状态机（放线只看Z1/Z2；收线只看Z3/Z4）")
+    # → Z3
+    mouse_down()
+    try:
+        while True:
+            if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
+            if is_color_yellow(pg.pixel(*CFG.tick_coords[3])): break
+            if not tension_gauge_visible_any():
+                log("对中到Z3途中拉力盘消失"); return False
+            time.sleep(0.02)
+    finally:
+        mouse_up()
+    log("已到 Z3，松线进入循环")
+    return True
+
+# ---------------------- 分阶段四点状态机（带10s计时） ----------------------
+def reel_with_timer(tension_start_ts):
+    """
+    返回值：
+      True  -> 拉力盘消失（可能成功也可能空军，由外层结合提示框判断）
+      False -> 过程提前失败（例如异常/退出）
+    """
     if not tension_gauge_visible_any():
-        log("状态机入口即无拉力盘 → 结束"); return True
+        return True
 
-    state = 'RELEASING'
-    log("状态=放线")
+    state = 'RELEASING'  # 初始从Z3松线开始
+    log("进入循环：Phase A（0~10s）为 Z2↔Z3；Phase B（>10s）为 Z3-0.5s 节律")
 
     while True:
         if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
         if not tension_gauge_visible_any():
-            log("拉力盘消失 → 成功上鱼"); return True
+            log("拉力盘消失（由外层判断是否成功/空军）"); return True
+
+        elapsed = time.time() - tension_start_ts
+        phaseA = (elapsed <= 10.0)
 
         c1 = pg.pixel(*CFG.tick_coords[1])
         c2 = pg.pixel(*CFG.tick_coords[2])
@@ -307,51 +334,72 @@ def reel_per_rule():
         c4 = pg.pixel(*CFG.tick_coords[4])
 
         if state == 'RELEASING':
-            if is_color_yellow(c2):
-                log("Z2=黄 → 切换【收线】"); state='REELING'; mouse_down()
-            elif is_color_yellow(c1):
-                log("Z1=黄（越界）→ 紧急收线到 Z3")
+            # 放线时Z1防卡死：立刻救援直到Z3
+            if is_color_yellow(c1):
+                log("Z1=黄（放线救援）→ 立刻收到 Z3")
                 mouse_down()
                 try:
                     while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
                         if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
-                        if not tension_gauge_visible_any(): log("救援中盘消失 → 成功"); return True
+                        if not tension_gauge_visible_any(): return True
                         time.sleep(0.02)
                 finally:
                     mouse_up()
-                log("回到 Z3 → 继续放线"); state='RELEASING'
+                continue
 
-        else:  # REELING
-            # 收线卡死保护：收线时若Z1变黄，暂停0.5s再继续
+            if phaseA:
+                # Phase A：标准Z2触发收线
+                if is_color_yellow(c2):
+                    log("Z2=黄 → 切【收线】"); state='REELING'; mouse_down()
+            else:
+                # Phase B：不再检测Z2；触达Z2就“拉到Z3→停0.5→松”，保持Z3节律
+                if is_color_yellow(c2):
+                    log("Phase B：Z2 命中 → 拉到Z3→停0.5→松")
+                    mouse_down()
+                    try:
+                        while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
+                            if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
+                            if not tension_gauge_visible_any(): return True
+                            time.sleep(0.02)
+                    finally:
+                        mouse_up()
+                    time.sleep(0.5)
+                    # 继续放线等待下一次节律触发
+        else:
+            # 收线时Z1防卡死：暂停0.5s再继续
             if is_color_yellow(c1):
-                log("Z1=黄（收线卡死保护）→ 暂停0.5s")
+                log("Z1=黄（收线卡死保护）→ 暂停0.5s继续")
                 mouse_up(); time.sleep(0.5); mouse_down(); time.sleep(0.02)
                 continue
+
             if is_color_yellow(c3):
-                log("Z3=黄 → 切换【放线】"); state='RELEASING'; mouse_up()
+                log("Z3=黄 → 切【放线】"); state='RELEASING'; mouse_up()
             elif is_color_yellow(c4):
-                log("Z4=黄（越界）→ 紧急放线到 Z2"); mouse_up()
+                log("Z4=黄（越界）→ 放线到 Z2")
+                mouse_up()
                 while not is_color_yellow(pg.pixel(*CFG.tick_coords[2])):
                     if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
-                    if not tension_gauge_visible_any(): log("紧急放线中盘消失 → 成功"); return True
+                    if not tension_gauge_visible_any(): return True
                     time.sleep(0.02)
-                log("到 Z2 → 继续【收线】"); state='REELING'; mouse_down()
+                if phaseA:
+                    log("到 Z2 → 继续【收线】"); state='REELING'; mouse_down()
+                else:
+                    log("Phase B：Z2 → 拉到Z3→停0.5→松")
+                    mouse_down()
+                    while not is_color_yellow(pg.pixel(*CFG.tick_coords[3])):
+                        if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
+                        if not tension_gauge_visible_any(): return True
+                        time.sleep(0.02)
+                    mouse_up(); time.sleep(0.5)
 
         time.sleep(0.02)
-
-# ---------------------- 收鱼点击（统一按住式） ----------------------
-def collect_fish(win_rect, press_hold=0.08):
-    cx, cy = (win_rect[0]+win_rect[2]//2, win_rect[1]+win_rect[3]//2)
-    pg.moveTo(cx, cy, duration=0.01)
-    pg.mouseDown(button='left'); time.sleep(press_hold); pg.mouseUp(button='left')
-    time.sleep(0.15)
 
 # ---------------------- 单轮流程 ----------------------
 def fish_one_round(win_rect):
     # 1) 抛竿
     cast(win_rect); log("抛竿完成")
 
-    # 2) 调桶（长按C 左滑）
+    # 2) 调桶
     show_bucket(win_rect); log("尝试显示鱼桶…")
     if not wait_bucket_visible(timeout=2.0, stable=2):
         log("首次调桶未见到鱼桶 → 再试一次")
@@ -359,41 +407,43 @@ def fish_one_round(win_rect):
         if not wait_bucket_visible(timeout=2.0, stable=2):
             log("两次调桶都未见到鱼桶 → 放弃本轮"); return False
 
-    # 2.1) 桶已出现 → 立刻判定容量是否将满
+    # 2.1) 出现就检测“将满”
     if bucket_full_once():
         log("检测到鱼桶已满 → 程序结束")
         return 'FULL'
 
-    # 3) 等待鱼桶消失（咬钩）
+    # 3) 等桶消失（咬钩）
     wait_bucket_disappear(stable=3)
 
-    # 4) 点按左键触发拉力盘（Z1变黄）
+    # 4) 触发拉力盘（Z1变黄）
     if not ensure_tension_by_clicks(win_rect, timeout=6.0, interval=1.0):
         return False
+    tension_start_ts = time.time()
 
-    # 5) 对中到 Z3（含对中阶段Z1卡死保护）
-    if not reel_to_Z3_then_release():
+    # 5) 对中：Z2→停0.5→Z3
+    if not prime_to_Z2_then_Z3_with_anti_stall():
         return False
 
-    # 6) 四点状态机
-    caught = reel_per_rule()
+    # 6) 分阶段收线（直到拉力盘消失）
+    if not reel_with_timer(tension_start_ts):
+        return False
 
-    # 7) 结算：循环点击收鱼直到提示框消失或最多10次
-    if caught:
-        log("钓鱼成功：等待黄色提示框…")
-        wait_banner_visible(timeout=4.0, stable=2)  # 没出现也继续尝试点击
-        log("开始循环点击收鱼，直到提示框消失 …")
-        for i in range(10):
-            if not banner_visible_once(): break
-            collect_fish(win_rect, press_hold=0.08)
-            time.sleep(0.6)
-        if banner_visible_once():
-            log("⚠️ 多次点击仍未收鱼成功，请检查提示框坐标或颜色阈值")
-        else:
-            log("提示框已消失 → 收鱼完成")
-    else:
-        log("本轮失败/空军")
-    return caught
+    # 7) 成功判定：拉力盘已消失 → 必须出现黄色提示框，否则为空军
+    if not wait_banner_visible(timeout=3.0, stable=2):
+        log("拉力盘消失但未出现提示框 → 空军")
+        return False
+
+    # 8) 收鱼：循环点击直到提示框消失（最多10次）
+    log("开始循环点击收鱼，直到提示框消失 …")
+    for _ in range(10):
+        if not banner_visible_once(): break
+        collect_fish(win_rect, press_hold=0.08)
+        time.sleep(0.6)
+    if banner_visible_once():
+        log("⚠️ 多次点击仍未收鱼成功，请检查提示框坐标/阈值")
+        return False
+    log("提示框已消失 → 收鱼完成")
+    return True
 
 # ---------------------- 主程序 ----------------------
 def main():
