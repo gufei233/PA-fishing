@@ -429,13 +429,14 @@ def fish_one_round(win_rect):
         return False
 
     # 7) 成功判定：拉力盘已消失 → 必须出现黄色提示框，否则为空军
-    time.sleep(0.8)
-    if not wait_banner_visible(timeout=3.0, stable=2):
-        log("拉力盘消失但未出现提示框 → 空军")
+    time.sleep(1.0)
+    if not banner_visible_once():
+        log("拉力盘消失1秒未出现提示框 → 空军")
         return False
 
     # 8) 收鱼：循环点击直到提示框消失（最多10次）
-    log("开始循环点击收鱼，直到提示框消失 …")
+    wait_banner_visible(timeout=2.0, stable=2)
+    log("检测到黄色提示框 → 开始收鱼")
     for _ in range(10):
         if not banner_visible_once(): break
         collect_fish(win_rect, press_hold=0.08)
