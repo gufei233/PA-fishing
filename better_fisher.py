@@ -12,19 +12,26 @@ import win32gui, win32con
 import tkinter as tk
 import keyboard
 
-# ─── 新增：用 mss 接管 pyautogui.pixel ──────────────────────────────
+# ── 用 mss 接管 pyautogui.pixel（兼容 mss 9.x+） ───────────────────
 try:
     import mss, pyautogui as pg
-    _sct = mss.mss()                       # 全局只建一次
+    import numpy as np
+    _sct = mss.mss()
+
     def _pixel_mss(x: int, y: int):
-        # mss.pixel 返回 BGRA，需要翻转成 RGB
-        b, g, r, _ = _sct.pixel(x, y)
-        return (r, g, b)
-    pg.pixel = _pixel_mss                 # Monkey-patch
-    print("[INFO] 已启用 mss.pixel → pyautogui.pixel 加速")
-except Exception as e:                    # mss 不在就自动回退
-    print(f"[INFO] mss 不可用，继续用原生 pyautogui.pixel ({e})")
+        """兼容所有 mss 版本；始终返回 (R,G,B)"""
+        # mss >= 9 没有 pixel()，改抓 1×1 矩形
+        shot = _sct.grab({"left": x, "top": y, "width": 1, "height": 1})
+        # shot.raw 返回 BGRA bytes；转换为 ndarray 取第 1 像素
+        b, g, r, _ = shot.raw[:4]
+        return (r, g, b)  # 转回 RGB
+
+    pg.pixel = _pixel_mss
+    print("[INFO] 已启用 mss.grab(1×1) → pyautogui.pixel 加速 (mss 9.x)")
+except Exception as e:
+    print(f"[INFO] mss 加速不可用，继续用原生 pyautogui.pixel ({e})")
 # ────────────────────────────────────────────────────────────────
+
 
 
 # ---------------------- SendInput 双通道点击 ----------------------
