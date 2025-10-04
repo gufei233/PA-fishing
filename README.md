@@ -35,6 +35,7 @@
 - **提示框延迟**：脚本已固定等待 1 秒再判断，如仍偏慢可改成 1.2s。
 ## 使用
 - 下载脚本压缩包并解压，在`better_fisher.py`配置区配置`stop_after_n_success`，若分辨率不为**1920×1080**则还需要校准像素坐标。
+- 打开终端输入`pip install opencv-python numpy pyautogui pygetwindow pywin32 keyboard pillow mss`安装依赖。
 - 进入自定义房间**推荐自己创建房间并加锁**，来到钓点**推荐河中间的巨石，人物不容易移动**，调出钓竿，确保鱼饵充足。
 - 在脚本文件夹地址栏输入`powershell`后回车，在弹出的终端输入`python better_fisher.py`后回车，若程序没有自动切换至游戏窗口请手动切换。
 - 在钓到`stop_after_n_success`中配置的数量的鱼后脚本会自动退出，手动卖鱼后重新运行脚本即可。
