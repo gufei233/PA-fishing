@@ -40,7 +40,7 @@
 - 在钓到`stop_after_n_success`中配置的数量的鱼后脚本会自动退出，手动卖鱼后重新运行脚本即可。
 ## 手动校准像素坐标
 - 若你的分辨率不为**1920×1080**则需要手动校准坐标，你可以根据分辨率自行换算。也可以手动拾取坐标：
-- 首先按照mark文件夹中的`gauge.png``bucket.png``banner.png`在游戏中截取对应图片重命名后替换原有图片，在[在线图片坐标拾取](https://www.lddgo.net/image/coordinate-pick)中根据`gauge_marked.png``bucket_marked.png``banner_marked.png`点选对应位置坐标。
+- 首先按照mark文件夹中的`gauge.png` `bucket.png` `banner.png`在游戏中截取对应图片重命名后替换原有图片，在[在线图片坐标拾取](https://www.lddgo.net/image/coordinate-pick)中根据`gauge_marked.png` `bucket_marked.png` `banner_marked.png`点选对应位置坐标。
 - 复制结果，替换`mark_points.py`中的`tick_coords`、`bucket_coords`与`banner_coords`。
-- 同样方式在文件夹内通过`python mark_points.py`运行验证脚本，查看生成的`gauge_marked.png``bucket_marked.png``banner_marked.png`坐标点是否准确，若不准确则进行微调。
+- 同样方式在文件夹内通过`python mark_points.py`运行验证脚本，查看生成的`gauge_marked.png` `bucket_marked.png` `banner_marked.png`坐标点是否准确，若不准确则进行微调。
 - 校准完成后在`better_fisher.py`配置区替换对应坐标。
