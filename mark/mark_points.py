@@ -25,7 +25,7 @@ class Cfg:
     }
     bucket_coords = {             # 鱼桶 top-yellow ×2, bottom-beige ×2
         "top":    [(1479, 336), (1768, 337)],
-        "bottom": [(1449, 878), (1814, 880)],
+        "bottom": [(1509 , 848), (1734 , 848)],
     }
     banner_coords = [(1200, 65), (1210, 153)]   # 提示框框两点
 

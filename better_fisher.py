@@ -69,12 +69,12 @@ class Cfg:
     # 鱼桶“可见”判定（上2黄、下2米白）
     bucket_coords = {
         "top":    [(1479, 336), (1768, 337)],
-        "bottom": [(1449, 878), (1814, 880)],
+        "bottom": [(1509 , 848), (1734 , 848)],
     }
     # 上鱼黄色提示框（2 点同时黄）
     banner_coords = [(1200, 65), (1210, 153)]
     # 成功X条后自动停止
-    stop_after_n_success = 16
+    stop_after_n_success = 21
     # 其它
     recalc_every = 12
     overlay_click_through = True
