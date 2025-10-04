@@ -80,6 +80,21 @@ class Cfg:
     overlay_click_through = True
 CFG = Cfg()
 
+# ---------------------- 连败计数 ----------------------
+FAIL_STREAK = 0              # 连续失败次数上限 3
+MAX_FAILS   = 3
+
+def reset_fail_streak():
+    global FAIL_STREAK
+    FAIL_STREAK = 0
+
+def inc_fail_streak():
+    global FAIL_STREAK
+    FAIL_STREAK += 1
+    log(f"⚠️ 本轮失败，当前连续失败 {FAIL_STREAK}/{MAX_FAILS}")
+    return FAIL_STREAK >= MAX_FAILS
+
+
 # ---------------------- 悬浮窗日志 ----------------------
 class Overlay:
     def __init__(self, font=("Consolas", 11)):
@@ -416,6 +431,7 @@ def reel_with_timer(tension_start_ts):
 
 # ---------------------- 单轮流程 ----------------------
 def fish_one_round(win_rect):
+    """单轮：抛竿 → 调桶 → (≤60s 等咬钩) → 后续流程"""
     # 1) 抛竿
     cast(win_rect); log("抛竿完成")
 
@@ -425,46 +441,59 @@ def fish_one_round(win_rect):
         log("首次调桶未见到鱼桶 → 再试一次")
         show_bucket(win_rect)
         if not wait_bucket_visible(timeout=2.0, stable=2):
-            log("两次调桶都未见到鱼桶 → 放弃本轮"); return False
+            log("两次调桶都未见到鱼桶 → 本轮失败")
+            return False
 
-    # 3) 等桶消失（咬钩）
-    wait_bucket_disappear(stable=3)
+    # 3) 最多等 60 s 咬钩
+    log("开始计时等待咬钩（最长 60 秒）…")
+    start_wait = time.time()
+    while True:
+        if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
+        if bucket_visible_once():
+            pass  # 仍在等待
+        else:
+            log("鱼桶消失 → 咬钩!")
+            break
+        if time.time() - start_wait >= 60:
+            log("⌛ 等待 60 秒仍未咬钩 → 判失败，按 Esc 收杆")
+            keyboard.press_and_release('esc')
+            # 等桶消失干净再返回失败
+            wait_bucket_disappear(timeout=None, stable=3)
+            return False
+        time.sleep(0.05)
 
-    # 4) 触发拉力盘（Z1变黄）
     if not ensure_tension_by_clicks(win_rect, timeout=6.0, interval=1.0):
         return False
     tension_start_ts = time.time()
 
-    # 5) 对中：Z2→停0.8→Z3（含早退成功判断）
     prime_res = prime_to_Z2_then_Z3_with_anti_stall()
     if prime_res == "SUCCESS_EARLY":
         pass
     elif not prime_res:
         return False
 
-    # 6) 分阶段收线（直到拉力盘消失）
     if prime_res != "SUCCESS_EARLY":
         if not reel_with_timer(tension_start_ts):
             return False
 
-    # 7) 成功/空军判定：拉力盘消失后固定等1s再看提示框
     time.sleep(1.0)
     if not banner_visible_once():
-        log("拉力盘消失 1 秒仍无提示框 → 空军")
+        log("拉力盘消失 1 秒无提示框 → 空军")
         return False
     wait_banner_visible(timeout=2.0, stable=2)
     log("检测到黄色提示框 → 开始收鱼")
 
-    # 8) 收鱼：循环点击直到提示框消失（最多10次）
     for _ in range(10):
         if not banner_visible_once(): break
         collect_fish(win_rect, press_hold=0.08)
         time.sleep(0.6)
     if banner_visible_once():
-        log("⚠️ 多次点击仍未收鱼成功，请检查提示框坐标/阈值")
+        log("⚠️ 提示框未消失，收鱼失败")
         return False
-    log("提示框已消失 → 收鱼完成")
+
+    log("收鱼成功")
     return True
+
 
 # ---------------------- 主程序 ----------------------
 def main():
@@ -480,8 +509,16 @@ def main():
             if keyboard.is_pressed(CFG.exit_key): raise KeyboardInterrupt
             res = fish_one_round(win_rect)
             total += 1
-            if res: succ += 1
-            log(f"本次{'成功' if res else '空军'} | 累计 {succ}/{total} = {succ/total*100:.1f}%")
+            if res: 
+                succ += 1
+                reset_fail_streak()
+                log(f"本次成功 | 累计 {succ}/{total} = {succ/total*100:.1f}%")
+            else:
+                # 本轮失败
+                if inc_fail_streak():
+                    log("连续 3 次失败 → 退出脚本")
+                    break
+                log(f"本次失败 | 累计 {succ}/{total} = {succ/total*100:.1f}%")
 
             # 成功 X 条后自动停止
             if succ >= CFG.stop_after_n_success:
