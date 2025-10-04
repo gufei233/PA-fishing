@@ -12,6 +12,21 @@ import win32gui, win32con
 import tkinter as tk
 import keyboard
 
+# ─── 新增：用 mss 接管 pyautogui.pixel ──────────────────────────────
+try:
+    import mss, pyautogui as pg
+    _sct = mss.mss()                       # 全局只建一次
+    def _pixel_mss(x: int, y: int):
+        # mss.pixel 返回 BGRA，需要翻转成 RGB
+        b, g, r, _ = _sct.pixel(x, y)
+        return (r, g, b)
+    pg.pixel = _pixel_mss                 # Monkey-patch
+    print("[INFO] 已启用 mss.pixel → pyautogui.pixel 加速")
+except Exception as e:                    # mss 不在就自动回退
+    print(f"[INFO] mss 不可用，继续用原生 pyautogui.pixel ({e})")
+# ────────────────────────────────────────────────────────────────
+
+
 # ---------------------- SendInput 双通道点击 ----------------------
 SendInput = ctypes.windll.user32.SendInput
 PUL = ctypes.POINTER(ctypes.c_ulong)
