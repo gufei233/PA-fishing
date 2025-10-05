@@ -39,14 +39,14 @@
 - 在脚本文件夹地址栏输入`powershell`后回车，在弹出的终端输入`python better_fisher.py`后回车，若倒计时结束后程序没有自动切换至游戏窗口请手动切换。
 - 在钓到`stop_after_n_success`中配置的数量的鱼后脚本会自动退出，手动卖鱼后重新运行脚本即可。
 ## 校准像素坐标
-- 若你的分辨率不为**1920×1080**则需要手动校准坐标，你可以使用`mark`文件夹中的`mark_points.py`进行校准。也可以手动拾取坐标。
+- 若你的分辨率不为**1920×1080**则需要校准坐标，你可以使用`mark`文件夹中的`mark_points.py`进行校准。也可以手动拾取坐标。
 ### 手动校准像素坐标
-- 按照mark文件夹中的`gauge.png` `bucket.png` `banner.png`在游戏中截取对应图片，在[在线图片坐标拾取](https://www.lddgo.net/image/coordinate-pick)中根据`example-gauge_marked.png` `example-bucket_marked.png` `example-banner_marked.png`点选对应位置坐标。
+- 按照mark文件夹中的`gauge.png` `bucket.png` `banner.png`在游戏中截取对应图片，在[在线图片坐标拾取](https://www.lddgo.net/image/coordinate-pick)中根据`example-gauge_marked.png` `example-bucket_marked.png` `example-banner_marked.png`图片标注点选对应位置坐标。
 - 复制结果，在`bf_config.py`对应位置填入坐标。
 ### 自动校准像素坐标
-- 截取对应图片后重命名替换`mark`文件夹中的`gauge.png` `bucket.png` `banner.png`图片。
-- 在文件夹内使用`python mark_points.py`运行验证脚本，查看生成的`gauge_marked.png` `bucket_marked.png` `banner_marked.png`与与`example`内示例图片对比判断坐标点是否准确，若不准确则进行微调。
-- 打开生成的`*_WxH.py`复制坐标后在`bf_config.py`对应位置填入坐标。
+- 截取对应图片后替换`mark`文件夹中的`gauge.png` `bucket.png` `banner.png`。
+- 在文件夹内使用`python mark_points.py`运行脚本，将生成的`gauge_marked.png` `bucket_marked.png` `banner_marked.png`与`example`内示例图片对比，判断坐标点是否准确标注，按需微调。
+- 校准完成后在`bf_config.py`对应位置填入生成的`*_WxH.py`文件内的坐标。
 # 用户协议 & 隐私声明
 
 > **重要提示**  
