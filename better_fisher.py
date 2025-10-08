@@ -1,4 +1,3 @@
-# better_fisher.py
 # -*- coding: utf-8 -*-
 
 import time, threading, ctypes
@@ -54,8 +53,23 @@ def mouse_up():
     except: pass
     _mouse_event(0x0004)
 
-# ---------------------- 连败计数 ----------------------
+# ---------------------- 暂停/恢复/退出 控制 ----------------------
+class RestartRound(Exception):
+    pass
+
+PAUSE_FLAG = threading.Event()       # True=暂停
+RESUME_RESTART = threading.Event()   # 恢复后是否强制重开一轮
+EXIT_FLAG = threading.Event()        # True=请求退出
+
+def on_exit_hotkey():
+    """全局热键：立即请求退出（暂停中也生效）"""
+    EXIT_FLAG.set()
+
+
+# ---------------------- 连败/统计计数 ----------------------
 FAIL_STREAK = 0
+SUCC = 0
+TOTAL = 0
 
 def reset_fail_streak():
     global FAIL_STREAK
@@ -67,39 +81,132 @@ def inc_fail_streak():
     log(f"⚠️ 本轮失败，当前连续失败 {FAIL_STREAK}/{CFG.max_fail_streak}")
     return FAIL_STREAK >= CFG.max_fail_streak
 
-# ---------------------- 悬浮窗日志 ----------------------
+# ───────────────── 悬浮窗 Overlay ─────────────────
 class Overlay:
-    def __init__(self, font=None):
-        if font is None:
-            font = (CFG.overlay.font_name, CFG.overlay.font_size)
-        self.font, self.queue = font, Queue()
+    """左下角悬浮窗，黑底白字，不抢焦点，可自动上移防止超出屏幕"""
+    def __init__(self):
+        self.queue = Queue()
         threading.Thread(target=self._run, daemon=True).start()
+
+    # ---------- 供外部调用 ----------
+    def move_to_window(self, rect): self.queue.put(("move", rect))
+    def log(self, msg):
+        line = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
+        print(line, end="")               # 终端立即输出
+        self.queue.put(("log", line))     # UI 线程异步刷新
+
+    # ---------- UI 线程 ----------
     def _run(self):
-        root = tk.Tk()
-        root.overrideredirect(True); root.attributes("-topmost", True); root.config(bg="black")
-        txt = tk.Text(root, width=66, height=18, bg="black", fg="white",
-                      insertbackground="white", font=self.font, highlightthickness=0, border=0)
-        txt.pack(anchor="sw", padx=6, pady=6); txt.configure(state="disabled")
-        hwnd = root.winfo_id()
+        self.root = tk.Tk()
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        self.root.config(bg="black")
+
+        self.txt = tk.Text(self.root, width=66, height=18,
+                           bg="black", fg="white",
+                           insertbackground="white",
+                           highlightthickness=0, border=0)
+        self.txt.pack(anchor="sw", padx=6, pady=6)
+        self.txt.configure(state="disabled")
+
+        # 透明与点击穿透
+        hwnd = self.root.winfo_id()
         ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | win32con.WS_EX_LAYERED
-        if CFG.overlay.click_through: ex_style |= win32con.WS_EX_TRANSPARENT
+        if CFG.overlay.click_through:
+            ex_style |= win32con.WS_EX_TRANSPARENT
         win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style)
         win32gui.SetLayeredWindowAttributes(hwnd, 0, 255, win32con.LWA_COLORKEY)
+
         def tick():
+            # 把队列中的命令批量执行
             while not self.queue.empty():
                 cmd, data = self.queue.get()
                 if cmd == "log":
-                    txt.configure(state="normal"); txt.insert("end", data); txt.see(tk.END); txt.configure(state="disabled")
+                    self.txt.configure(state="normal")
+                    self.txt.insert("end", data)
+                    self.txt.see("end")
+                    self.txt.configure(state="disabled")
+                    self._ensure_visible()      # ⬅️ 保证整窗在屏幕内
                 elif cmd == "move":
-                    L,T,W,H = data; root.geometry(f"+{L+10}+{T+H-360}")
-            root.after(80, tick)
-        tick(); root.mainloop()
-    def move_to_window(self, rect): self.queue.put(("move", rect))
-    def log(self, msg):
-        ts = time.strftime("%H:%M:%S"); line = f"[{ts}] {msg}\n"; print(line, end="")
-        self.queue.put(("log", line))
+                    L, T, W, H = data
+                    self._reposition(L, T, W, H)
+            self.root.after(15, tick)  # 15 ms 一轮，几乎同步
+        tick()
+        self.root.mainloop()
+
+    # ---------- 可见性 & 定位 ----------
+    def _reposition(self, L, T, W, H):
+        """初次定位到游戏窗口左下角上方 10 px，且不超屏"""
+        self.root.update_idletasks()
+        h = self.root.winfo_height()
+        scr_h = self.root.winfo_screenheight()
+        new_x = L + 10
+        new_y = min(T + H - h - 10, scr_h - h - 10)
+        self.root.geometry(f"+{new_x}+{new_y}")
+
+    def _ensure_visible(self):
+        """写入新行后，如窗口底端超出屏幕则整体上移"""
+        self.root.update_idletasks()
+        scr_h = self.root.winfo_screenheight()
+        y = self.root.winfo_y()
+        h = self.root.winfo_height()
+        if y + h + 5 > scr_h:              # 留 5 px 缓冲
+            new_y = max(0, scr_h - h - 10)
+            self.root.geometry(f"+{self.root.winfo_x()}+{new_y}")
+
 LOGGER = Overlay()
 def log(msg): LOGGER.log(msg)
+
+# ---------------------- 暂停/恢复 控制 ----------------------
+class RestartRound(Exception):
+    """用于从任意深度的循环里立即跳回主循环，并从抛竿重新开始。"""
+    pass
+
+PAUSE_FLAG = threading.Event()       # True=暂停
+RESUME_RESTART = threading.Event()   # 恢复后是否强制重开一轮（每次恢复都置 True）
+
+def on_toggle_pause():
+    """全局热键：暂停/继续。继续时检查成功数是否达阈值，达则清零成功数。"""
+    global SUCC
+    if not PAUSE_FLAG.is_set():
+        PAUSE_FLAG.set()
+        mouse_up()  # 避免任意阶段按下时鼠标仍保持“按住”状态
+        log(f"⏸ 暂停（按 '{CFG.keys.pause_toggle.upper()}' 继续；按 '{CFG.keys.exit_key.upper()}' 退出）")
+    else:
+        # 恢复：若成功数已达阈值，则清零；不管怎样都从头重开一轮
+        thresh = CFG.timings.stop_after_n_success
+        if SUCC >= thresh:
+            log(f"成功数 {SUCC} ≥ 阈值 {thresh} → 清零成功数")
+            SUCC = 0
+        else:
+            log("继续钓鱼：从头开始一轮")
+        RESUME_RESTART.set()
+        PAUSE_FLAG.clear()
+
+def check_controls():
+    # 任何时刻：若收到退出请求，立即抛出
+    if EXIT_FLAG.is_set() or keyboard.is_pressed(CFG.keys.exit_key):
+        raise KeyboardInterrupt
+
+    # 暂停：阻塞直到恢复或退出
+    if PAUSE_FLAG.is_set():
+        mouse_up()
+        while PAUSE_FLAG.is_set() and not EXIT_FLAG.is_set():
+            # 暂停期间也允许按 q 直接退出
+            if keyboard.is_pressed(CFG.keys.exit_key):
+                EXIT_FLAG.set()
+                break
+            time.sleep(0.05)
+
+        # 若此时是退出，则立即退出
+        if EXIT_FLAG.is_set():
+            raise KeyboardInterrupt
+
+        # 恢复后统一从头开新一轮
+        if RESUME_RESTART.is_set():
+            RESUME_RESTART.clear()
+            raise RestartRound
+
 
 # ---------------------- 窗口与聚焦 ----------------------
 def focus_game():
@@ -166,7 +273,7 @@ def banner_visible_once():
 def wait_banner_visible(timeout=None, stable=2):
     ok, t0 = 0, time.time()
     while True:
-        if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+        check_controls()
         ok = ok+1 if banner_visible_once() else 0
         if ok >= stable: return True
         if timeout and time.time()-t0 > timeout: return False
@@ -175,7 +282,7 @@ def wait_banner_visible(timeout=None, stable=2):
 def wait_banner_disappear(stable=3):
     miss = 0
     while True:
-        if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+        check_controls()
         miss = miss+1 if not banner_visible_once() else 0
         if miss >= stable: return True
         time.sleep(0.05)
@@ -194,7 +301,7 @@ def bucket_visible_once():
 def wait_bucket_visible(timeout=5.0, stable=2):
     ok, t0 = 0, time.time(); log("等待鱼桶出现…")
     while True:
-        if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+        check_controls()
         ok = ok+1 if bucket_visible_once() else 0
         if ok >= stable: log("鱼桶已出现"); return True
         if timeout and time.time()-t0 > timeout: log("等待鱼桶出现超时"); return False
@@ -203,13 +310,14 @@ def wait_bucket_visible(timeout=5.0, stable=2):
 def wait_bucket_disappear(timeout=None, stable=3):
     miss = 0; log("鱼桶已出现，等待其消失（无超时）…")
     while True:
-        if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+        check_controls()
         miss = miss+1 if not bucket_visible_once() else 0
         if miss >= stable: log("鱼桶消失 → 咬钩!"); return True
         time.sleep(0.05)
 
 # ---------------------- 基础动作 ----------------------
 def cast(wrect):
+    check_controls()
     focus_game()
     cx, cy = (wrect[0]+wrect[2]//2, wrect[1]+wrect[3]//2)
     pg.moveTo(cx, cy, duration=0.05)
@@ -222,6 +330,7 @@ def show_bucket(wrect, *, hold_ms=None, swipe_ratio=None, use_drag=None):
     if swipe_ratio is None: swipe_ratio = CFG.timings.bucket_swipe_ratio
     if use_drag is None: use_drag = CFG.timings.bucket_use_drag
 
+    check_controls()
     focus_game()
     L,T,W,H = wrect
     start_x = L + int(0.80*W)
@@ -243,17 +352,18 @@ def ensure_tension_by_clicks(wrect, press_hold=0.06, interval=1.0, timeout=None)
     log("点按左键以触发拉力盘（Z1 变黄）…")
     start = time.time()
     while True:
-        if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+        check_controls()
         pg.moveTo(cx, cy, duration=0.01)
         pg.mouseDown(button='left'); time.sleep(press_hold); pg.mouseUp(button='left')
         for _ in range(int(interval / 0.05)):
             if tension_gauge_start_by_Z1(): log("Z1 变黄 → 拉力盘出现"); return True
-            if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+            check_controls()
             time.sleep(0.05)
         if timeout and (time.time() - start > timeout):
             log("超时：多次点按仍未出现拉力盘"); return False
 
 def collect_fish(win_rect, press_hold=0.08):
+    check_controls()
     cx, cy = (win_rect[0]+win_rect[2]//2, win_rect[1]+win_rect[3]//2)
     pg.moveTo(cx, cy, duration=0.01)
     pg.mouseDown(button='left'); time.sleep(press_hold); pg.mouseUp(button='left')
@@ -276,7 +386,7 @@ def prime_to_Z2_then_Z3_with_anti_stall():
     z1_stuck_since = None
     try:
         while True:
-            if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+            check_controls()
             if is_color_yellow(pg.pixel(*CFG.coords.tick_coords[2])): break
             # 收线卡死保护：Z1黄持续>阈值，松一段时间再继续
             if is_color_yellow(pg.pixel(*CFG.coords.tick_coords[1])):
@@ -299,7 +409,7 @@ def prime_to_Z2_then_Z3_with_anti_stall():
     mouse_down()
     try:
         while True:
-            if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+            check_controls()
             if is_color_yellow(pg.pixel(*CFG.coords.tick_coords[3])): break
             if not tension_gauge_visible_any():
                 mouse_up()
@@ -328,11 +438,7 @@ def reel_with_timer(tension_start_ts):
     log(f"进入循环：Phase A = Z2↔Z3；满足(>{CFG.timings.phaseB_switch_elapsed:.1f} s & Z2黄) → Phase B = Z3-{CFG.timings.phaseB_release_sec:.1f} s 节拍")
 
     while True:
-        # ------------ 公共退出判定 ------------
-        if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
-        if not tension_gauge_visible_any():
-            log("拉力盘消失（由外层判断成功 / 空军）"); return True
-
+        check_controls()
         # 读取 4 点颜色 & 时间
         c1 = pg.pixel(*CFG.coords.tick_coords[1])
         c2 = pg.pixel(*CFG.coords.tick_coords[2])
@@ -340,19 +446,28 @@ def reel_with_timer(tension_start_ts):
         c4 = pg.pixel(*CFG.coords.tick_coords[4])
         elapsed = time.time() - tension_start_ts
 
+        # 若拉力盘消失，由外层判断成功/空军
+        if not (is_color_white(c1) or is_color_yellow(c1) or
+                is_color_white(c2) or is_color_yellow(c2) or
+                is_color_white(c3) or is_color_yellow(c3) or
+                is_color_white(c4) or is_color_yellow(c4)):
+            log("拉力盘消失（由外层判断成功 / 空军）")
+            return True
+
         # ------------ Phase B : 固定节奏 ------------
         if phaseB:
             # 第一次进入 B：先拉到 Z3；之后循环：拉到 Z3 → 松 固定秒
             if first_B_cycle:
                 first_B_cycle = False
             else:
-                time.sleep(CFG.timings.phaseB_release_sec)
+                for _ in range(int(CFG.timings.phaseB_release_sec / 0.05)):
+                    check_controls(); time.sleep(0.05)
 
             # 收线到 Z3
             mouse_down()
             try:
                 while not is_color_yellow(pg.pixel(*CFG.coords.tick_coords[3])):
-                    if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+                    check_controls()
                     if not tension_gauge_visible_any(): return True
                     # 收线 Z1 卡死保护
                     if is_color_yellow(pg.pixel(*CFG.coords.tick_coords[1])):
@@ -379,7 +494,7 @@ def reel_with_timer(tension_start_ts):
             if is_color_yellow(c1):
                 mouse_down()
                 while not is_color_yellow(pg.pixel(*CFG.coords.tick_coords[3])):
-                    if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+                    check_controls()
                     if not tension_gauge_visible_any(): return True
                     time.sleep(0.02)
                 mouse_up(); continue
@@ -398,7 +513,7 @@ def reel_with_timer(tension_start_ts):
             elif is_color_yellow(c4):
                 mouse_up()
                 while not is_color_yellow(pg.pixel(*CFG.coords.tick_coords[2])):
-                    if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+                    check_controls()
                     if not tension_gauge_visible_any(): return True
                     time.sleep(0.02)
                 mouse_down(); state = 'REELING'
@@ -433,7 +548,7 @@ def fish_one_round(win_rect):
     log(f"开始计时等待咬钩（最长 {CFG.timings.wait_bite_seconds:.0f} 秒）…")
     start_wait = time.time()
     while True:
-        if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
+        check_controls()
         if bucket_visible_once():
             pass  # 仍在等待
         else:
@@ -465,7 +580,8 @@ def fish_one_round(win_rect):
         if not reel_with_timer(tension_start_ts):
             return False
 
-    time.sleep(CFG.timings.post_tension_check_delay)
+    for _ in range(int(CFG.timings.post_tension_check_delay / 0.05)):
+        check_controls(); time.sleep(0.05)
     if not banner_visible_once():
         log("拉力盘消失后未见提示框 → 空军")
         return False
@@ -473,9 +589,11 @@ def fish_one_round(win_rect):
     log("检测到黄色提示框 → 开始收鱼")
 
     for _ in range(CFG.timings.collect_cycles_max):
+        check_controls()
         if not banner_visible_once(): break
         collect_fish(win_rect, press_hold=CFG.timings.collect_press_hold)
-        time.sleep(CFG.timings.collect_cycle_sleep)
+        for _ in range(int(CFG.timings.collect_cycle_sleep / 0.05)):
+            check_controls(); time.sleep(0.05)
     if banner_visible_once():
         log("⚠️ 提示框未消失，收鱼失败")
         return False
@@ -485,35 +603,56 @@ def fish_one_round(win_rect):
 
 # ---------------------- 主程序 ----------------------
 def main():
+    global SUCC, TOTAL
     try:
-        win_rect = get_win_rect()
-        log(f"窗口：{win_rect}  3 秒后开始；按 '{CFG.keys.exit_key}' 退出")
-        for i in (3,2,1):
-            if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
-            log(str(i)); time.sleep(1.0)
+        # 注册全局暂停热键（suppress=True 避免把按键传入游戏）
+        keyboard.add_hotkey(CFG.keys.pause_toggle, on_toggle_pause, suppress=True)
+        keyboard.add_hotkey(CFG.keys.exit_key,      on_exit_hotkey,  suppress=True)
 
-        total=succ=0
+        win_rect = get_win_rect()
+        log(f"窗口：{win_rect}  3 秒后开始；按 '{CFG.keys.exit_key}' 退出；按 '{CFG.keys.pause_toggle}' 暂停/继续")
+
+        # 倒计时期间也可暂停/退出
+        for i in (3, 2, 1):
+            log(str(i))
+            for _ in range(10):
+                check_controls(); time.sleep(0.1)
+
         while True:
-            if keyboard.is_pressed(CFG.keys.exit_key): raise KeyboardInterrupt
-            res = fish_one_round(win_rect)
-            total += 1
+            # 单轮（内部任何阶段都可暂停；恢复后会 RestartRound）
+            try:
+                res = fish_one_round(win_rect)
+            except RestartRound:
+                # 不计入 total，不增加连败；直接从头开始
+                mouse_up()
+                log("▶ 恢复后从头开始新一轮…")
+                continue
+
+            TOTAL += 1
             if res:
-                succ += 1
+                SUCC += 1
                 reset_fail_streak()
-                log(f"本次成功 | 累计 {succ}/{total} = {succ/total*100:.1f}%")
+                log(f"本次成功 | 累计 {SUCC}/{TOTAL} = {SUCC/TOTAL*100:.1f}%")
             else:
                 # 本轮失败
                 if inc_fail_streak():
                     log(f"连续 {CFG.max_fail_streak} 次失败 → 退出脚本")
                     break
-                log(f"本次失败 | 累计 {succ}/{total} = {succ/total*100:.1f}%")
+                log(f"本次失败 | 累计 {SUCC}/{TOTAL} = {SUCC/TOTAL*100:.1f}%")
 
-            # 成功 X 条后自动停止
-            if succ >= CFG.timings.stop_after_n_success:
-                log(f"已成功 {succ} 条，达到阈值 {CFG.timings.stop_after_n_success} → 停止脚本")
-                break
+            # ✅ 鱼桶满（成功数达到阈值）→ 自动暂停（不退出）
+            if SUCC >= CFG.timings.stop_after_n_success:
+                log(f"已成功 {SUCC} 条，达到阈值 {CFG.timings.stop_after_n_success} → 自动暂停（按 '{CFG.keys.pause_toggle.upper()}' 继续）")
+                PAUSE_FLAG.set()
+                mouse_up()
+                # 统一走控制检查：等待恢复并从头开新一轮
+                try:
+                    check_controls()
+                except RestartRound:
+                    continue
 
-            if total % CFG.timings.recalc_every == 0:
+            # 每 N 轮重新取一次窗口
+            if TOTAL % CFG.timings.recalc_every == 0:
                 win_rect = get_win_rect()
     except KeyboardInterrupt:
         mouse_up(); log(f"用户按 '{CFG.keys.exit_key}' 或 Ctrl+C 退出")

@@ -18,6 +18,8 @@ class Keys:
     show_bucket: str = 'c'
     # 等待 60s 仍未咬钩时软退使用的按键（默认为 Esc）
     abort_wait: str = 'esc'
+    # ✅ 新增：暂停/继续（随时可按，默认 'p'）
+    pause_toggle: str = 'p'
 
 # ---------------------- 坐标配置（绝对坐标，单位：像素） ----------------------
 @dataclass
@@ -45,7 +47,7 @@ class Timings:
     # 主循环中：每进行 N 次重新取一次窗口坐标
     recalc_every: int = 12
     # 成功 X 条后自动停止
-    stop_after_n_success: int = 24
+    stop_after_n_success: int = 2
 
     # —— 抛竿相关 ——
     cast_press_hold: float = 0.06       # 按住左键抛竿时长（秒）
