@@ -1,4 +1,3 @@
-# bf_config.py
 # -*- coding: utf-8 -*-
 """
 所有可调参数集中在此。修改后无需改动主程序。
@@ -46,8 +45,8 @@ class Coords:
 class Timings:
     # 主循环中：每进行 N 次重新取一次窗口坐标
     recalc_every: int = 12
-    # 成功 X 条后自动停止
-    stop_after_n_success: int = 16
+    # 成功 X 条后自动停止（进入暂停）
+    stop_after_n_success: int = 5
 
     # —— 抛竿相关 ——
     cast_press_hold: float = 0.06       # 按住左键抛竿时长（秒）
@@ -117,7 +116,7 @@ class Colors:
 class Config:
     # 游戏窗口标题（用于聚焦及定位）
     title: str = "猛兽派对"
-    # 连续失败多少次后自动退出
+    # 连续失败多少次后自动暂停（原逻辑为“退出”）
     max_fail_streak: int = 3
 
     keys: Keys = field(default_factory=Keys)

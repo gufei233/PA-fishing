@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-
 import time, threading, ctypes
 from queue import Queue
 
@@ -53,23 +52,25 @@ def mouse_up():
     except: pass
     _mouse_event(0x0004)
 
-# ---------------------- 暂停/恢复/退出 控制 ----------------------
+# ---------------------- 运行时状态 ----------------------
 class RestartRound(Exception):
+    """用于从任意深度的循环里立即跳回主循环，并从抛竿重新开始。"""
     pass
 
-PAUSE_FLAG = threading.Event()       # True=暂停
-RESUME_RESTART = threading.Event()   # 恢复后是否强制重开一轮
-EXIT_FLAG = threading.Event()        # True=请求退出
+PAUSE_FLAG      = threading.Event()   # True=暂停
+RESUME_RESTART  = threading.Event()   # 恢复后是否强制重开一轮（每次恢复都置 True）
+EXIT_FLAG       = threading.Event()   # True=请求退出
+PAUSE_REASON    = None                # 'manual' | 'bucket_full' | 'fail_streak' | None
+
+# 连败/统计计数
+FAIL_STREAK = 0           # 连续失败次数（恢复后清零）
+SUCC = 0                  # 全局成功次数（不随暂停清零）
+TOTAL = 0                 # 全局总轮数
+BUCKET_SUCC = 0           # “本桶计数”——只用于达到 stop_after_n_success 的自动暂停
 
 def on_exit_hotkey():
     """全局热键：立即请求退出（暂停中也生效）"""
     EXIT_FLAG.set()
-
-
-# ---------------------- 连败/统计计数 ----------------------
-FAIL_STREAK = 0
-SUCC = 0
-TOTAL = 0
 
 def reset_fail_streak():
     global FAIL_STREAK
@@ -158,28 +159,33 @@ LOGGER = Overlay()
 def log(msg): LOGGER.log(msg)
 
 # ---------------------- 暂停/恢复 控制 ----------------------
-class RestartRound(Exception):
-    """用于从任意深度的循环里立即跳回主循环，并从抛竿重新开始。"""
-    pass
-
-PAUSE_FLAG = threading.Event()       # True=暂停
-RESUME_RESTART = threading.Event()   # 恢复后是否强制重开一轮（每次恢复都置 True）
-
 def on_toggle_pause():
-    """全局热键：暂停/继续。继续时检查成功数是否达阈值，达则清零成功数。"""
-    global SUCC
+    """
+    全局热键：暂停/继续。
+    - 继续时：
+        * 总是清空连续失败计数（满足“恢复后清空失败次数”的需求）
+        * 若上次因“桶满”暂停，则清零“本桶计数”（不影响全局 SUCC/TOTAL）
+        * 不管因何恢复，都从头重开一轮
+    """
+    global PAUSE_REASON, BUCKET_SUCC
     if not PAUSE_FLAG.is_set():
+        # 运行中 → 进入“手动暂停”
+        PAUSE_REASON = 'manual'
         PAUSE_FLAG.set()
-        mouse_up()  # 避免任意阶段按下时鼠标仍保持“按住”状态
+        mouse_up()
         log(f"⏸ 暂停（按 '{CFG.keys.pause_toggle.upper()}' 继续；按 '{CFG.keys.exit_key.upper()}' 退出）")
     else:
-        # 恢复：若成功数已达阈值，则清零；不管怎样都从头重开一轮
-        thresh = CFG.timings.stop_after_n_success
-        if SUCC >= thresh:
-            log(f"成功数 {SUCC} ≥ 阈值 {thresh} → 清零成功数")
-            SUCC = 0
-        else:
-            log("继续钓鱼：从头开始一轮")
+        # 从暂停 → 恢复
+        # 清空连续失败
+        if FAIL_STREAK > 0:
+            log("恢复 → 清空连续失败计数")
+        reset_fail_streak()
+        # 桶满暂停：清零“本桶计数”
+        if PAUSE_REASON == 'bucket_full' and BUCKET_SUCC > 0:
+            log(f"恢复 → 桶满计数 {BUCKET_SUCC} 清零（全局累计不变）")
+            BUCKET_SUCC = 0
+        PAUSE_REASON = None
+        log("继续钓鱼：从头开始一轮")
         RESUME_RESTART.set()
         PAUSE_FLAG.clear()
 
@@ -206,7 +212,6 @@ def check_controls():
         if RESUME_RESTART.is_set():
             RESUME_RESTART.clear()
             raise RestartRound
-
 
 # ---------------------- 窗口与聚焦 ----------------------
 def focus_game():
@@ -603,9 +608,9 @@ def fish_one_round(win_rect):
 
 # ---------------------- 主程序 ----------------------
 def main():
-    global SUCC, TOTAL
+    global SUCC, TOTAL, BUCKET_SUCC, PAUSE_REASON
     try:
-        # 注册全局暂停热键（suppress=True 避免把按键传入游戏）
+        # 注册全局暂停/退出热键（suppress=True 避免把按键传入游戏）
         keyboard.add_hotkey(CFG.keys.pause_toggle, on_toggle_pause, suppress=True)
         keyboard.add_hotkey(CFG.keys.exit_key,      on_exit_hotkey,  suppress=True)
 
@@ -631,18 +636,28 @@ def main():
             TOTAL += 1
             if res:
                 SUCC += 1
+                BUCKET_SUCC += 1
                 reset_fail_streak()
-                log(f"本次成功 | 累计 {SUCC}/{TOTAL} = {SUCC/TOTAL*100:.1f}%")
+                log(f"本次成功 | 本桶 {BUCKET_SUCC}/{CFG.timings.stop_after_n_success} | 全局 {SUCC}/{TOTAL} = {SUCC/TOTAL*100:.1f}%")
             else:
                 # 本轮失败
                 if inc_fail_streak():
-                    log(f"连续 {CFG.max_fail_streak} 次失败 → 退出脚本")
-                    break
-                log(f"本次失败 | 累计 {SUCC}/{TOTAL} = {SUCC/TOTAL*100:.1f}%")
+                    # 连续失败达到阈值 → 自动暂停（不退出），恢复后清空失败次数
+                    log(f"连续 {CFG.max_fail_streak} 次失败 → 自动暂停（按 '{CFG.keys.pause_toggle.upper()}' 继续）")
+                    PAUSE_REASON = 'fail_streak'
+                    PAUSE_FLAG.set()
+                    mouse_up()
+                    # 统一走控制检查：等待恢复并从头开新一轮
+                    try:
+                        check_controls()
+                    except RestartRound:
+                        continue
+                log(f"本次失败 | 全局 {SUCC}/{TOTAL} = {SUCC/TOTAL*100:.1f}%")
 
-            # ✅ 鱼桶满（成功数达到阈值）→ 自动暂停（不退出）
-            if SUCC >= CFG.timings.stop_after_n_success:
-                log(f"已成功 {SUCC} 条，达到阈值 {CFG.timings.stop_after_n_success} → 自动暂停（按 '{CFG.keys.pause_toggle.upper()}' 继续）")
+            # ✅ 鱼桶满（本桶成功数达到阈值）→ 自动暂停（不退出）
+            if BUCKET_SUCC >= CFG.timings.stop_after_n_success:
+                log(f"已成功 {BUCKET_SUCC} 条，达到阈值 {CFG.timings.stop_after_n_success} → 自动暂停（按 '{CFG.keys.pause_toggle.upper()}' 继续）")
+                PAUSE_REASON = 'bucket_full'
                 PAUSE_FLAG.set()
                 mouse_up()
                 # 统一走控制检查：等待恢复并从头开新一轮
