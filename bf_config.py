@@ -19,6 +19,8 @@ class Keys:
     abort_wait: str = 'esc'
     # 暂停/继续（随时可按，默认 'p'）
     pause_toggle: str = 'p'
+    # 【新增】显示/隐藏左下角日志框
+    overlay_toggle: str = 'o'
 
 # ---------------------- 坐标配置（绝对坐标，单位：像素） ----------------------
 @dataclass
@@ -46,7 +48,7 @@ class Timings:
     # 主循环中：每进行 N 次重新取一次窗口坐标
     recalc_every: int = 12
     # 成功 X 条后自动停止（进入暂停）
-    stop_after_n_success: int = 5
+    stop_after_n_success: int = 33
 
     # —— 抛竿相关 ——
     cast_press_hold: float = 0.06       # 按住左键抛竿时长（秒）
@@ -91,6 +93,8 @@ class Overlay:
     click_through: bool = True           # 鼠标穿透（不挡住点击）
     font_name: str = "Consolas"          # 字体名
     font_size: int = 11                  # 字号
+    # 整体透明度（0~255；越小越透明；仅影响文字，不影响背景穿透）
+    alpha: int = 40
 
 # ---------------------- 颜色/容差配置 ----------------------
 @dataclass

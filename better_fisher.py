@@ -8,6 +8,7 @@ import pyautogui as pg
 import pygetwindow as gw
 import win32gui, win32con
 import tkinter as tk
+import tkinter.font as tkfont
 import keyboard
 
 # 载入外部配置
@@ -84,9 +85,11 @@ def inc_fail_streak():
 
 # ───────────────── 悬浮窗 Overlay ─────────────────
 class Overlay:
-    """左下角悬浮窗，黑底白字，不抢焦点，可自动上移防止超出屏幕"""
+    """左下角悬浮窗，黑底白字，不抢焦点，可自动上移防止超出屏幕。
+       支持全局 Alpha 半透明 + 颜色键（黑色背景完全穿透，文字半透明）。"""
     def __init__(self):
         self.queue = Queue()
+        self.visible = True
         threading.Thread(target=self._run, daemon=True).start()
 
     # ---------- 供外部调用 ----------
@@ -95,31 +98,47 @@ class Overlay:
         line = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
         print(line, end="")               # 终端立即输出
         self.queue.put(("log", line))     # UI 线程异步刷新
+    def toggle_visible(self):
+        self.visible = not self.visible
+        self.queue.put(("toggle", self.visible))
 
     # ---------- UI 线程 ----------
     def _run(self):
         self.root = tk.Tk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.config(bg="black")
+
+        COLKEY = "#ff00ff"               # 亮品红
+        self.root.config(bg=COLKEY)
 
         self.txt = tk.Text(self.root, width=66, height=18,
-                           bg="black", fg="white",
+                           bg=COLKEY, fg="white",           # ②
                            insertbackground="white",
                            highlightthickness=0, border=0)
         self.txt.pack(anchor="sw", padx=6, pady=6)
         self.txt.configure(state="disabled")
 
-        # 透明与点击穿透
+        # === 透明 / 颜色键 / 点击穿透 =====================
         hwnd = self.root.winfo_id()
-        ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | win32con.WS_EX_LAYERED
+        ex  = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+        ex  |= win32con.WS_EX_LAYERED
         if CFG.overlay.click_through:
-            ex_style |= win32con.WS_EX_TRANSPARENT
-        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style)
-        win32gui.SetLayeredWindowAttributes(hwnd, 0, 255, win32con.LWA_COLORKEY)
+            ex |= win32con.WS_EX_TRANSPARENT
+        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex)
+
+        import win32api
+        colref = win32api.RGB(255, 0, 255)
+        alpha  = max(0, min(CFG.overlay.alpha, 255))
+        win32gui.SetLayeredWindowAttributes(
+            hwnd, colref, 0, win32con.LWA_COLORKEY
+        )
+
+        # 只用 Tk 原生 α
+        # self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", max(0, min(CFG.overlay.alpha, 255)) / 255)
+        # =================================================
 
         def tick():
-            # 把队列中的命令批量执行
             while not self.queue.empty():
                 cmd, data = self.queue.get()
                 if cmd == "log":
@@ -127,13 +146,16 @@ class Overlay:
                     self.txt.insert("end", data)
                     self.txt.see("end")
                     self.txt.configure(state="disabled")
-                    self._ensure_visible()      # ⬅️ 保证整窗在屏幕内
+                    self._ensure_visible()
                 elif cmd == "move":
                     L, T, W, H = data
                     self._reposition(L, T, W, H)
-            self.root.after(15, tick)  # 15 ms 一轮，几乎同步
+                elif cmd == "toggle":
+                    self.root.deiconify() if data else self.root.withdraw()
+            self.root.after(15, tick)
         tick()
         self.root.mainloop()
+
 
     # ---------- 可见性 & 定位 ----------
     def _reposition(self, L, T, W, H):
@@ -188,6 +210,12 @@ def on_toggle_pause():
         log("继续钓鱼：从头开始一轮")
         RESUME_RESTART.set()
         PAUSE_FLAG.clear()
+
+def on_toggle_overlay():
+    """全局热键：隐藏/显示左下角日志框（不影响终端输出）"""
+    LOGGER.toggle_visible()
+    # 也打印到终端，方便在隐藏状态下知晓
+    print(f"[{time.strftime('%H:%M:%S')}] 切换日志框：{'显示' if LOGGER.visible else '隐藏'}")
 
 def check_controls():
     # 任何时刻：若收到退出请求，立即抛出
@@ -610,12 +638,13 @@ def fish_one_round(win_rect):
 def main():
     global SUCC, TOTAL, BUCKET_SUCC, PAUSE_REASON
     try:
-        # 注册全局暂停/退出热键（suppress=True 避免把按键传入游戏）
-        keyboard.add_hotkey(CFG.keys.pause_toggle, on_toggle_pause, suppress=True)
-        keyboard.add_hotkey(CFG.keys.exit_key,      on_exit_hotkey,  suppress=True)
+        # 注册全局热键（suppress=True 避免把按键传入游戏）
+        keyboard.add_hotkey(CFG.keys.pause_toggle,   on_toggle_pause,   suppress=True)
+        keyboard.add_hotkey(CFG.keys.exit_key,       on_exit_hotkey,    suppress=True)
+        keyboard.add_hotkey(CFG.keys.overlay_toggle, on_toggle_overlay, suppress=True)
 
         win_rect = get_win_rect()
-        log(f"窗口：{win_rect}  3 秒后开始；按 '{CFG.keys.exit_key}' 退出；按 '{CFG.keys.pause_toggle}' 暂停/继续")
+        log(f"窗口：{win_rect}  3 秒后开始；按 '{CFG.keys.exit_key}' 退出；按 '{CFG.keys.pause_toggle}' 暂停/继续；按 '{CFG.keys.overlay_toggle}' 隐藏/显示日志框")
 
         # 倒计时期间也可暂停/退出
         for i in (3, 2, 1):
