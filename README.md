@@ -56,14 +56,14 @@
 
 ## 手动校准（可选）
 
-若无法截图/自动校准失败，可参考 `mark/example` 中的标注示例，在[在线图片坐标拾取]\([https://www.lddgo.net/image/coordinate-pick](https://www.lddgo.net/image/coordinate-pick)) 中获取坐标，然后直接修改配置文件中的 `coords`。
+若无法截图/自动校准失败，可参考 `mark/example` 中的标注示例，在[在线图片坐标拾取]([https://www.lddgo.net/image/coordinate-pick](https://www.lddgo.net/image/coordinate-pick)) 中获取坐标，然后直接修改配置文件中的 `coords`。
 
 ---
 
 ## 配置文件 `bf_config.json`
 
 - **EXE首次运行自动生成**，存放于EXE 同目录。
-- 包含 `keys / coords / timings / overlay / colors` 五大板块，详细说明参考\`bf\_config.py\`。
+- 包含 `keys / coords / timings / overlay / colors` 五大板块，详细说明参考`bf_config.py`。
 - 任意字段均可在文本编辑器中调整，保存后立刻生效（无需重启脚本）。
 
 ---
