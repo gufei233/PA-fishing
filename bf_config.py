@@ -28,18 +28,25 @@ class Coords:
     # 张力盘（拉力盘）四点，基于 1920×1080
     tick_coords: Dict[int, Tuple[int, int]] = field(default_factory=lambda: {
         1: (808, 1016),  # Z1
-        2: (872,  952),  # Z2
-        3: (961,  929),  # Z3
+        2: (872, 952),  # Z2
+        3: (961, 929),  # Z3
         4: (1048, 951),  # Z4
     })
     # 鱼桶“可见”判定（上 2 黄、下 2 米白）
     bucket_coords: Dict[str, List[Tuple[int, int]]] = field(default_factory=lambda: {
-        "top":    [(1479, 336), (1768, 337)],
-        "bottom": [(1509,  848), (1734,  848)],
+        "top": [
+            (1479, 336),
+            (1768, 337),
+        ],
+        "bottom": [
+            (1509, 848),
+            (1734, 848),
+        ],
     })
     # 上鱼黄色提示框位置（2 点同时为黄）
     banner_coords: List[Tuple[int, int]] = field(default_factory=lambda: [
-        (1200, 65), (1210, 153)
+        (1200, 65),
+        (1210, 153),
     ])
 
 # ---------------------- 时间/次数参数 ----------------------
@@ -48,7 +55,7 @@ class Timings:
     # 主循环中：每进行 N 次重新取一次窗口坐标
     recalc_every: int = 12
     # 成功 X 条后自动停止（进入暂停）
-    stop_after_n_success: int = 33
+    stop_after_n_success: int = 30
 
     # —— 抛竿相关 ——
     cast_press_hold: float = 0.06       # 按住左键抛竿时长（秒）
