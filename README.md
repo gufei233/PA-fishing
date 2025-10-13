@@ -17,8 +17,8 @@
    ```bash
    # 源码
    python better_fisher.py
-   # EXE双击即可
    ```
+EXE双击即可
 
 3. **菜单选项**
 
@@ -56,7 +56,7 @@
 
 ## 手动校准（可选）
 
-若无法截图/自动校准失败，可参考 `mark/example` 中的标注示例，在[在线图片坐标拾取]([https://www.lddgo.net/image/coordinate-pick](https://www.lddgo.net/image/coordinate-pick)) 中获取坐标，然后直接修改配置文件中的 `coords`。
+若无法截图/自动校准失败，可参考 `mark/example` 中的标注示例，在[在线图片坐标拾取](https://www.lddgo.net/image/coordinate-pick) 中获取坐标，然后直接修改配置文件中的 `coords`。
 
 ---
 
