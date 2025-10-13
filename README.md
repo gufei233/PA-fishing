@@ -18,7 +18,7 @@
    # 源码
    python better_fisher.py
    ```
-EXE双击即可
+   EXE双击即可
 
 3. **菜单选项**
 
