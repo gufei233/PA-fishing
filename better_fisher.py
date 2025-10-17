@@ -17,18 +17,51 @@ import keyboard
 from bf_config import CFG
 
 # ───────────────────────────────────────────────────────────────────────
-# 【整合自 mark_points.py 的基准与绘制配置】（以 1920×1080 为基准）
-# 说明：这里保留独立的“基准点”，用于“按分辨率比例换算”，不会受运行时 CFG 变更影响。
-#      若你希望以后更改基准，只需改这里即可（不必碰钓鱼逻辑）。
-MP_BASE_SIZE = (1920, 1080)  # (W0, H0)
-MP_TICK_BASE = {             # 张力盘四点（基准）
+# 小窗（1600900）基准坐标
+MP_BASE_SIZE = (1618, 947)  # 实际分辨率
+MP_TICK_BASE = {             # 张力盘四点
+    1: (682, 885), 2: (736, 831), 3: (809, 811), 4: (883, 830),
+}
+MP_BUCKET_BASE = {           # 鱼桶：上 2 黄、下 2 米白
+    "top":    [(1267, 317), (1472, 313)],
+    "bottom": [(1266, 743), (1455, 743)],
+}
+MP_BANNER_BASE = [(1006, 94), (1005, 163)]  # 黄框两点
+
+
+# 全屏（1920x1080）基准坐标
+FS_BASE_SIZE = (1920, 1080)
+FS_TICK_BASE = {
     1: (808, 1016), 2: (872, 952), 3: (961, 929), 4: (1048, 951),
 }
-MP_BUCKET_BASE = {           # 鱼桶：上 2 黄、下 2 米白（基准）
+FS_BUCKET_BASE = {
     "top":    [(1479, 336), (1768, 337)],
     "bottom": [(1509, 848), (1734, 848)],
 }
-MP_BANNER_BASE = [(1200, 65), (1210, 153)]  # 黄框两点（基准）
+FS_BANNER_BASE = [(1200, 65), (1210, 153)]
+
+# 当前激活的“基准配置”
+ACTIVE_BASE_SIZE   = None
+ACTIVE_TICK_BASE   = None
+ACTIVE_BUCKET_BASE = None
+ACTIVE_BANNER_BASE = None
+
+def _detect_mode(win_rect):
+    """L==0 且 T==0 → fullscreen；否则 windowed"""
+    L, T, W, H = win_rect
+    return "fullscreen" if (L == 0 and T == 0) else "windowed"
+
+def _get_profile_by_rect(win_rect):
+    """
+    返回 (mode, base_size, tick_base, bucket_base, banner_base)
+    - windowed：使用现有 MP_* 基准
+    - fullscreen：使用 FS_* 基准
+    """
+    mode = _detect_mode(win_rect)
+    if mode == "fullscreen":
+        return mode, FS_BASE_SIZE, FS_TICK_BASE, FS_BUCKET_BASE, FS_BANNER_BASE
+    else:
+        return mode, MP_BASE_SIZE, MP_TICK_BASE, MP_BUCKET_BASE, MP_BANNER_BASE
 
 # 绘制参数（仅用于生成校验图）
 MK_RADIUS   = 10
@@ -282,17 +315,88 @@ def _scale_points(points: Sequence[Tuple[int, int]], w: int, h: int,
                   base_w: int, base_h: int) -> List[Tuple[int, int]]:
     return [_scale_point(p, w, h, base_w, base_h) for p in points]
 
+
 def _mark_and_save(img_path: Path,
-                   points: Sequence[Tuple[int, int]],
-                   labels: Sequence[str],
-                   suffix: str = "_marked") -> Tuple[List[Tuple[int, int]], Tuple[int, int]]:
+                   points,
+                   labels,
+                   suffix: str = "_marked",
+                   anchor: str = "scale"):
     """
-    生成校验图（≅ mark_points.py 的行为）：
-    - 自动按图片分辨率缩放基准点；
-    - 在原图上画圆点与标签，输出 *_marked.png；
-    - 返回使用的坐标与图片分辨率。
+    生成校验图：按“当前基准”（ACTIVE_BASE_SIZE）/anchor 映射点位，画圈标注并输出 *_marked.png。
+    返回 (使用的坐标列表, 图片分辨率)。
     """
     if not img_path.exists():
+        log(f"[WARN] 找不到图片 {img_path}")
+        return [], (0, 0)
+
+    img = cv.imread(str(img_path))
+    if img is None:
+        log(f"[WARN] 读取失败 {img_path}")
+        return [], (0, 0)
+
+    h, w = img.shape[:2]
+    base_w, base_h = (ACTIVE_BASE_SIZE if ACTIVE_BASE_SIZE else MP_BASE_SIZE)
+    need_scale = (w, h) != (base_w, base_h)
+    pts_use = _map_points(points, w, h, base_w, base_h, anchor) if need_scale else list(points)
+
+    note = "≠ 基准，已按比例/锚定换算" if need_scale else "为基准尺寸，直接使用原坐标"
+    log(f"[INFO] {img_path.name}: 检测到分辨率 {w}x{h}，{note}。")
+
+    for (x, y), text_label in zip(pts_use, labels):
+        cv.circle(img, (x, y), MK_RADIUS, MK_COLOR, MK_THICK, cv.LINE_AA)
+        cv.putText(img, text_label, (x + MK_RADIUS + 4, y - 4),
+                   MK_FONT, MK_FSCALE, MK_COLOR, MK_FTHICK, cv.LINE_AA)
+
+    out_path = img_path.with_stem(img_path.stem + suffix)
+    cv.imwrite(str(out_path), img)
+    log(f"[OK] {out_path} 已保存")
+    return pts_use, (w, h)
+
+def _map_points(points, w, h, base_w, base_h, anchor="scale"):
+    """
+    将基准点映射到图片分辨率下：
+    - anchor="scale": 传统等比缩放（x,y 都按比例）
+    - anchor="right": 右侧锚定（x 以“距右边”的像素为准不缩放；y 仍按比例）
+    - anchor="center_bottom": 底部居中锚定（x 以“距中心”按 ky；y 以“距底部”按 ky；ky=h/base_h）
+    - anchor="top_center": 顶部居中锚定（x 以“距中心”按 ky；y 以“距顶部”按 ky）
+    """
+    if anchor == "right":
+        sy = h / base_h
+        out = []
+        for x0, y0 in points:
+            x = w - (base_w - x0)
+            y = int(round(y0 * sy))
+            out.append((max(0, min(w-1, int(round(x)))), max(0, min(h-1, y))))
+        return out
+    elif anchor == "center_bottom":
+        ky = h / base_h
+        cx_base = base_w / 2.0
+        cx_cur  = w / 2.0
+        out = []
+        for x0, y0 in points:
+            x = cx_cur + (x0 - cx_base) * ky
+            y = h - (base_h - y0) * ky
+            out.append((max(0, min(w-1, int(round(x)))), max(0, min(h-1, int(round(y))))))
+        return out
+    elif anchor == "top_center":
+        ky = h / base_h
+        cx_base = base_w / 2.0
+        cx_cur  = w / 2.0
+        out = []
+        for x0, y0 in points:
+            x = cx_cur + (x0 - cx_base) * ky
+            y = y0 * ky
+            out.append((max(0, min(w-1, int(round(x)))), max(0, min(h-1, int(round(y))))))
+        return out
+    else:
+        # fallback: 等比缩放
+        sx, sy = w / base_w, h / base_h
+        out = []
+        for x0, y0 in points:
+            x = int(round(x0 * sx))
+            y = int(round(y0 * sy))
+            out.append((max(0, min(w-1, x)), max(0, min(h-1, y))))
+        return out
         log(f"[WARN] 找不到图片 {img_path}")
         return [], (0, 0)
 
@@ -819,20 +923,47 @@ def start_fishing():
             pass
 
 # ---------------------- 校准：窗口分辨率 → 绝对坐标 ----------------------
+
 def _scale_for_window(win_rect):
-    """把基准点（以 1920×1080 为基准）按窗口大小缩放，并加上窗口偏移，得到‘屏幕绝对坐标’"""
+    """
+    依据窗口 (L,T,W,H) 自动选择【全屏/小窗】基准并换算为屏幕绝对坐标。
+    锚定：tick=底部居中；bucket=右锚定；banner=顶部居中。
+    同时设置 ACTIVE_* 变量供标注/日志使用。
+    """
     L, T, W, H = win_rect
-    base_w, base_h = MP_BASE_SIZE
+    mode, base_size, TICK_BASE, BUCKET_BASE, BANNER_BASE = _get_profile_by_rect(win_rect)
+
+    global ACTIVE_BASE_SIZE, ACTIVE_TICK_BASE, ACTIVE_BUCKET_BASE, ACTIVE_BANNER_BASE
+    ACTIVE_BASE_SIZE   = base_size
+    ACTIVE_TICK_BASE   = TICK_BASE
+    ACTIVE_BUCKET_BASE = BUCKET_BASE
+    ACTIVE_BANNER_BASE = BANNER_BASE
+
+    base_w, base_h = base_size
     sx, sy = W / base_w, H / base_h
 
-    def spt(x, y):  # scale + offset
-        return (L + int(round(x * sx)), T + int(round(y * sy)))
+    def spt_right(x, y):
+        xr = L + W - int(round(base_w - x))
+        yr = T + int(round(y * sy))
+        return (xr, yr)
 
-    tick = {i: spt(*MP_TICK_BASE[i]) for i in sorted(MP_TICK_BASE)}
-    bucket_top = [spt(*p) for p in MP_BUCKET_BASE["top"]]
-    bucket_bottom = [spt(*p) for p in MP_BUCKET_BASE["bottom"]]
+    def spt_cb(x, y):
+        ky = sy
+        xr = L + int(round(W/2 + (x - base_w/2) * ky))
+        yr = T + int(round(H - (base_h - y) * ky))
+        return (xr, yr)
+
+    def spt_tc(x, y):
+        ky = sy
+        xr = L + int(round(W/2 + (x - base_w/2) * ky))
+        yr = T + int(round(y * ky))
+        return (xr, yr)
+
+    tick = {i: spt_cb(*TICK_BASE[i]) for i in sorted(TICK_BASE)}
+    bucket_top = [spt_right(*p) for p in BUCKET_BASE["top"]]
+    bucket_bottom = [spt_right(*p) for p in BUCKET_BASE["bottom"]]
     bucket = {"top": bucket_top, "bottom": bucket_bottom}
-    banner = [spt(*p) for p in MP_BANNER_BASE]
+    banner = [spt_tc(*p) for p in BANNER_BASE]
 
     return tick, bucket, banner, (sx, sy)
 
@@ -920,12 +1051,11 @@ def _apply_runtime_override(tick, bucket, banner):
 
 def do_calibration_interactive():
     """
-    交互式校准流程：
-    1) 自动检测窗口分辨率与位置 → 比例换算成“屏幕绝对坐标”，输出日志；
-    2) 询问是否做图校验（y）：
-         - 引导把 gauge.png / bucket.png / banner.png 放入 mark/；
-         - 生成 *_marked.png 与三个 *_<WxH>.py；
-    3) 询问是否写回 bf_config.py；写回后同步更新运行时 CFG。
+    交互式校准流程（稳健缩进版）：
+    - 自动根据 (L,T) 选择全屏/小窗基准；
+    - 打印缩放系数与“基准=…x …”；
+    - 可选生成三张标注图（gauge/bucket/banner），分别按底部居中/右锚/顶部居中；
+    - 可选写回 bf_config.py，并实时覆盖运行时 CFG。
     """
     try:
         win_rect = get_win_rect()  # (L,T,W,H)
@@ -935,10 +1065,12 @@ def do_calibration_interactive():
 
     tick, bucket, banner, (sx, sy) = _scale_for_window(win_rect)
     L, T, W, H = win_rect
-    log(f"校准：窗口矩形 L={L}, T={T}, W={W}, H={H}；基准={MP_BASE_SIZE[0]}x{MP_BASE_SIZE[1]}；缩放系数 sx={sx:.6f}, sy={sy:.6f}")
-    log(_coords_to_text(tick, bucket, banner))
+    log(f"校准：窗口矩形 L={L}, T={T}, W={W}, H={H}；基准={ACTIVE_BASE_SIZE[0]}x{ACTIVE_BASE_SIZE[1]}；缩放系数 sx={sx:.6f}, sy={sy:.6f}")
+    log("—— 校准后的屏幕绝对坐标 ——\n" +
+        f"tick_coords = {{1:{tick[1]}, 2:{tick[2]}, 3:{tick[3]}, 4:{tick[4]}}}\n" +
+        f"bucket_coords = {{'top': {bucket['top']}, 'bottom': {bucket['bottom']}}}\n" +
+        f"banner_coords = {banner}")
 
-    # —— 是否校验并生成标注图 —— #
     ans = input("\n是否校验坐标并生成标注图？(y/N): ").strip().lower()
     if ans == "y":
         mark_dir = Path(__file__).resolve().parent / "mark"
@@ -947,33 +1079,32 @@ def do_calibration_interactive():
         print(f"把图片放到：{mark_dir}  后，当你准备好了，输入 y 回车继续。")
         ready = input("准备好了吗？(y/N): ").strip().lower()
         if ready == "y":
-            # 1) gauge
+            # 1) gauge（底部居中）
             g_img = mark_dir / "gauge.png"
-            g_pts_base = [MP_TICK_BASE[k] for k in sorted(MP_TICK_BASE)]
-            g_labels   = [f"Z{k}" for k in sorted(MP_TICK_BASE)]
-            g_pts, g_res = _mark_and_save(g_img, g_pts_base, g_labels)
+            g_pts_base = [ACTIVE_TICK_BASE[k] for k in sorted(ACTIVE_TICK_BASE)]
+            g_labels   = [f"Z{k}" for k in sorted(ACTIVE_TICK_BASE)]
+            g_pts, g_res = _mark_and_save(g_img, g_pts_base, g_labels, anchor="center_bottom")
             if g_res != (0, 0):
                 _write_coord_file("gauge", g_pts, g_res, mark_dir)
 
-            # 2) bucket
+            # 2) bucket（右锚定）
             b_img = mark_dir / "bucket.png"
-            b_pts_base = MP_BUCKET_BASE["top"] + MP_BUCKET_BASE["bottom"]
+            b_pts_base = ACTIVE_BUCKET_BASE["top"] + ACTIVE_BUCKET_BASE["bottom"]
             b_labels   = ["Top-1", "Top-2", "Bot-1", "Bot-2"]
-            b_pts, b_res = _mark_and_save(b_img, b_pts_base, b_labels)
+            b_pts, b_res = _mark_and_save(b_img, b_pts_base, b_labels, anchor="right")
             if b_res != (0, 0):
                 _write_coord_file("bucket", b_pts, b_res, mark_dir)
 
-            # 3) banner
+            # 3) banner（顶部居中）
             n_img = mark_dir / "banner.png"
-            n_pts_base = MP_BANNER_BASE
+            n_pts_base = ACTIVE_BANNER_BASE
             n_labels   = ["B-1", "B-2"]
-            n_pts, n_res = _mark_and_save(n_img, n_pts_base, n_labels)
+            n_pts, n_res = _mark_and_save(n_img, n_pts_base, n_labels, anchor="top_center")
             if n_res != (0, 0):
                 _write_coord_file("banner", n_pts, n_res, mark_dir)
 
             print("\n请将 mark/*.png 与 mark/example/*.png 对照确认点位是否合理。")
 
-    # —— 是否写回配置 —— #
     ans2 = input("\n是否自动替换配置文件 (bf_config.py) 中的坐标？(y/N): ").strip().lower()
     if ans2 == "y":
         bf_path = Path(__file__).resolve().parent / "bf_config.py"

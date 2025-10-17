@@ -55,7 +55,7 @@ class Timings:
     # 主循环中：每进行 N 次重新取一次窗口坐标
     recalc_every: int = 12
     # 成功 X 条后自动停止（进入暂停）
-    stop_after_n_success: int = 30
+    stop_after_n_success: int = 16
 
     # —— 抛竿相关 ——
     cast_press_hold: float = 0.06       # 按住左键抛竿时长（秒）
