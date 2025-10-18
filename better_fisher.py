@@ -17,7 +17,7 @@ import keyboard
 from bf_config import CFG
 
 # ───────────────────────────────────────────────────────────────────────
-# 小窗（1600900）基准坐标
+# 小窗（1600x900）基准坐标
 MP_BASE_SIZE = (1618, 947)  # 实际分辨率
 MP_TICK_BASE = {             # 张力盘四点
     1: (682, 885), 2: (736, 831), 3: (809, 811), 4: (883, 830),
@@ -47,15 +47,15 @@ ACTIVE_BUCKET_BASE = None
 ACTIVE_BANNER_BASE = None
 
 def _detect_mode(win_rect):
-    """L==0 且 T==0 → fullscreen；否则 windowed"""
+    """判断是否全屏"""
     L, T, W, H = win_rect
     return "fullscreen" if (L == 0 and T == 0) else "windowed"
 
 def _get_profile_by_rect(win_rect):
     """
     返回 (mode, base_size, tick_base, bucket_base, banner_base)
-    - windowed：使用现有 MP_* 基准
-    - fullscreen：使用 FS_* 基准
+    - windowed使用现有 MP_* 基准
+    - fullscreen使用 FS_* 基准
     """
     mode = _detect_mode(win_rect)
     if mode == "fullscreen":
@@ -124,7 +124,7 @@ PAUSE_REASON    = None                # 'manual' | 'bucket_full' | 'fail_streak'
 FAIL_STREAK = 0           # 连续失败次数（恢复后清零）
 SUCC = 0                  # 全局成功次数（不随暂停清零）
 TOTAL = 0                 # 全局总轮数
-BUCKET_SUCC = 0           # “本桶计数”——只用于达到 stop_after_n_success 的自动暂停
+BUCKET_SUCC = 0           # “本桶计数” 只用于达到 stop_after_n_success 的自动暂停
 
 def on_exit_hotkey():
     """全局热键：立即请求退出（暂停中也生效）"""
@@ -943,9 +943,11 @@ def _scale_for_window(win_rect):
     sx, sy = W / base_w, H / base_h
 
     def spt_right(x, y):
-        xr = L + W - int(round(base_w - x))
-        yr = T + int(round(y * sy))
+        ky = sy   # 用垂直缩放做等比
+        xr = L + W - int(round((base_w - x) * ky))  # x 方向也按 ky 缩放
+        yr = T + int(round(y * ky))
         return (xr, yr)
+
 
     def spt_cb(x, y):
         ky = sy
@@ -1051,11 +1053,11 @@ def _apply_runtime_override(tick, bucket, banner):
 
 def do_calibration_interactive():
     """
-    交互式校准流程（稳健缩进版）：
-    - 自动根据 (L,T) 选择全屏/小窗基准；
-    - 打印缩放系数与“基准=…x …”；
-    - 可选生成三张标注图（gauge/bucket/banner），分别按底部居中/右锚/顶部居中；
-    - 可选写回 bf_config.py，并实时覆盖运行时 CFG。
+    交互式校准流程（精简版）：
+    - 自动根据窗口位置选择【全屏/小窗】基准；
+    - 打印缩放系数与基准分辨率；
+    - 仅输出换算后的坐标；随后询问是否写回 bf_config.py；
+    - 不再询问是否生成标注图片。
     """
     try:
         win_rect = get_win_rect()  # (L,T,W,H)
@@ -1066,45 +1068,14 @@ def do_calibration_interactive():
     tick, bucket, banner, (sx, sy) = _scale_for_window(win_rect)
     L, T, W, H = win_rect
     log(f"校准：窗口矩形 L={L}, T={T}, W={W}, H={H}；基准={ACTIVE_BASE_SIZE[0]}x{ACTIVE_BASE_SIZE[1]}；缩放系数 sx={sx:.6f}, sy={sy:.6f}")
-    log("—— 校准后的屏幕绝对坐标 ——\n" +
-        f"tick_coords = {{1:{tick[1]}, 2:{tick[2]}, 3:{tick[3]}, 4:{tick[4]}}}\n" +
-        f"bucket_coords = {{'top': {bucket['top']}, 'bottom': {bucket['bottom']}}}\n" +
-        f"banner_coords = {banner}")
 
-    ans = input("\n是否校验坐标并生成标注图？(y/N): ").strip().lower()
-    if ans == "y":
-        mark_dir = Path(__file__).resolve().parent / "mark"
-        mark_dir.mkdir(parents=True, exist_ok=True)
-        print("\n请按 mark/example 示例裁好三张图并命名为：gauge.png / bucket.png / banner.png")
-        print(f"把图片放到：{mark_dir}  后，当你准备好了，输入 y 回车继续。")
-        ready = input("准备好了吗？(y/N): ").strip().lower()
-        if ready == "y":
-            # 1) gauge（底部居中）
-            g_img = mark_dir / "gauge.png"
-            g_pts_base = [ACTIVE_TICK_BASE[k] for k in sorted(ACTIVE_TICK_BASE)]
-            g_labels   = [f"Z{k}" for k in sorted(ACTIVE_TICK_BASE)]
-            g_pts, g_res = _mark_and_save(g_img, g_pts_base, g_labels, anchor="center_bottom")
-            if g_res != (0, 0):
-                _write_coord_file("gauge", g_pts, g_res, mark_dir)
+    # 直接输出换算结果
+    print("\n—— 校准后的屏幕绝对坐标 ——")
+    print(f"tick_coords = {{1:{tick[1]}, 2:{tick[2]}, 3:{tick[3]}, 4:{tick[4]}}}")
+    print(f"bucket_coords = {{'top': {bucket['top']}, 'bottom': {bucket['bottom']}}}")
+    print(f"banner_coords = {banner}")
 
-            # 2) bucket（右锚定）
-            b_img = mark_dir / "bucket.png"
-            b_pts_base = ACTIVE_BUCKET_BASE["top"] + ACTIVE_BUCKET_BASE["bottom"]
-            b_labels   = ["Top-1", "Top-2", "Bot-1", "Bot-2"]
-            b_pts, b_res = _mark_and_save(b_img, b_pts_base, b_labels, anchor="right")
-            if b_res != (0, 0):
-                _write_coord_file("bucket", b_pts, b_res, mark_dir)
-
-            # 3) banner（顶部居中）
-            n_img = mark_dir / "banner.png"
-            n_pts_base = ACTIVE_BANNER_BASE
-            n_labels   = ["B-1", "B-2"]
-            n_pts, n_res = _mark_and_save(n_img, n_pts_base, n_labels, anchor="top_center")
-            if n_res != (0, 0):
-                _write_coord_file("banner", n_pts, n_res, mark_dir)
-
-            print("\n请将 mark/*.png 与 mark/example/*.png 对照确认点位是否合理。")
-
+    # 只询问是否写回
     ans2 = input("\n是否自动替换配置文件 (bf_config.py) 中的坐标？(y/N): ").strip().lower()
     if ans2 == "y":
         bf_path = Path(__file__).resolve().parent / "bf_config.py"
@@ -1115,22 +1086,184 @@ def do_calibration_interactive():
         else:
             log("[OK] 已在 bf_config.py 尾部追加覆盖段，且已实时生效。")
 
-    print("\n校准流程完成。你可以：\n  - 输入 1 继续做其它校准；\n  - 输入 2 开始钓鱼；\n  - 输入 3 退出脚本。")
+    print("\n校准流程完成。你可以：\n  - 输入 1 继续做其它校准；\n  - 输入 2 开始钓鱼；\n  - 输入 3 进入调试模式；\n  - 输入 4 退出脚本。")
+
+# ---------------------- 调试模式（P截图标注 / Q退出） ----------------------
+def _dpi_aware_init():
+    """尽量避免 DPI 缩放导致的截图/坐标偏移"""
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+def _pil_to_bgr(img_pil):
+    """PIL -> OpenCV BGR"""
+    import numpy as _np
+    import cv2 as _cv
+    arr = _np.array(img_pil)
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        arr = _cv.cvtColor(arr, _cv.COLOR_RGBA2BGR)
+    else:
+        arr = _cv.cvtColor(arr, _cv.COLOR_RGB2BGR)
+    return arr
+
+def _draw_cross(img, x, y, color=(0,255,255), size=8, thick=2):
+    import cv2 as _cv
+    x, y = int(x), int(y)
+    _cv.line(img, (x-size, y), (x+size, y), color, thick, _cv.LINE_AA)
+    _cv.line(img, (x, y-size), (x, y+size), color, thick, _cv.LINE_AA)
+
+def _draw_label(img, x, y, text, color=(255,255,255)):
+    import cv2 as _cv
+    x, y = int(x), int(y)
+    _cv.putText(img, str(text), (x+8, y-8), _cv.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, _cv.LINE_AA)
+
+def _annotate_points(img_bgr, win_rect, abs_points, labels, color=(0,255,255)):
+    """将绝对坐标点转换为窗口局部并在截图上标注"""
+    import cv2 as _cv
+    L, T, W, H = win_rect
+    xs, ys = [], []
+    for i, (ax, ay) in enumerate(abs_points):
+        lx, ly = int(ax - L), int(ay - T)
+        xs.append(lx); ys.append(ly)
+        _draw_cross(img_bgr, lx, ly, color=color, size=8, thick=2)
+        if labels and i < len(labels):
+            _draw_label(img_bgr, lx, ly, labels[i], color=(255,255,255))
+    # 外接框
+    if xs and ys:
+        margin = 12
+        x1, y1 = max(0, min(xs)-margin), max(0, min(ys)-margin)
+        x2, y2 = min(W-1, max(xs)+margin), min(H-1, max(ys)+margin)
+        _cv.rectangle(img_bgr, (x1,y1), (x2,y2), (0,200,255), 1, _cv.LINE_AA)
+
+def _save_debug_image(img_bgr, basename: str):
+    import cv2 as _cv, time as _time
+    from pathlib import Path as _Path
+    ts = _time.strftime("%Y-%m-%d_%H-%M-%S")
+    fname = f"{basename}_{ts}.png"
+    out_dir = _Path(__file__).resolve().parent
+    fpath = out_dir / fname
+    _cv.imwrite(str(fpath), img_bgr)
+    return fpath
+
+def _screenshot_window(win_rect):
+    """region=(L,T,W,H) -> PIL.Image"""
+    import pyautogui as _pg
+    L, T, W, H = win_rect
+    return _pg.screenshot(region=(L, T, W, H))
+
+def debug_mode():
+    """
+    调试模式：
+      - 进入后按 'p' 截图并自动标注输出图片，顺序：bucket -> tick -> banner；
+      - 截三次后再次循环第一张图；
+      - 按 'q' 退出调试模式；
+      - 日志输出沿用右下角悬浮窗（Overlay）。
+    """
+    import keyboard
+    import pygetwindow as _gw
+
+    _dpi_aware_init()
+    running = {"flag": True}
+    step_idx = {"i": 0}
+    step_order = ["bucket", "tick", "banner"]
+    round_idx = {"i": 1}
+
+    logger_keys = {
+        "shot": "p",   # 固定使用 p
+        "quit": "q",   # 固定使用 q
+    }
+
+    def _get_rect():
+        try:
+            return get_win_rect()
+        except Exception:
+            # 退化为全屏
+            import pyautogui as _pg
+            sw, sh = _pg.size()
+            rect = (0, 0, sw, sh)
+            LOGGER.move_to_window(rect)
+            return rect
+
+    def on_p():
+        if not running["flag"]:
+            return
+        # 获取窗口 & 截图
+        win_rect = _get_rect()
+        L,T,W,H = win_rect
+        log(f"[DEBUG] 获取窗口：({L},{T},{W},{H})")
+
+        pil_img = _screenshot_window(win_rect)
+        img_bgr = _pil_to_bgr(pil_img)
+
+        step = step_order[step_idx["i"]]
+        # 准备坐标
+        if step == "bucket":
+            bc = CFG.coords.bucket_coords
+            pts = list(bc.get("top", [])) + list(bc.get("bottom", []))
+            labels = ["top[0]","top[1]","bottom[0]","bottom[1]"][:len(pts)]
+            _annotate_points(img_bgr, win_rect, pts, labels, color=(0,255,255))
+        elif step == "tick":
+            tc = CFG.coords.tick_coords
+            pts = [tc[k] for k in sorted(tc.keys())]
+            labels = [f"Z{k}" for k in sorted(tc.keys())]
+            _annotate_points(img_bgr, win_rect, pts, labels, color=(0,255,0))
+        else:  # banner
+            bn = CFG.coords.banner_coords
+            pts = list(bn)
+            labels = [f"banner[{i}]" for i in range(len(pts))]
+            _annotate_points(img_bgr, win_rect, pts, labels, color=(0,200,255))
+
+        # 保存
+        path = _save_debug_image(img_bgr, f"{round_idx['i']:02d}_{step}")
+        log(f"[DEBUG] 已保存：{path}")
+
+        # 下一步
+        step_idx["i"] += 1
+        if step_idx["i"] >= len(step_order):
+            log(f"[DEBUG] 第 {round_idx['i']:02d} 轮三张截图完成。按 'q' 退出，或按 'p' 重新开始新一轮。")
+            step_idx["i"] = 0
+            round_idx["i"] += 1
+
+    def on_q():
+        running["flag"] = False
+        log("[DEBUG] 收到 'q'，退出调试模式。")
+
+    # 注册快捷键（独立于钓鱼主循环）
+    h1 = keyboard.add_hotkey(logger_keys["shot"], on_p, suppress=True)
+    h2 = keyboard.add_hotkey(logger_keys["quit"], on_q, suppress=True)
+
+    log("进入调试模式：按 'p' 截图并标注（顺序：bucket→tick→banner），按 'q' 退出。")
+    try:
+        # 简单的事件循环，直到 on_q 将 flag 置为 False
+        while running["flag"]:
+            time.sleep(0.05)
+    finally:
+        try:
+            keyboard.remove_hotkey(h1)
+            keyboard.remove_hotkey(h2)
+        except Exception:
+            pass
+        log("已退出调试模式。")
 
 # ---------------------- 主菜单入口 ----------------------
 def main():
     while True:
-        print("\n=========== PA-Fishing ===========")
+        print("=========== PA-Fishing ===========")
         print("1. 校准坐标")
         print("2. 开始钓鱼")
-        print("3. 退出脚本")
+        print("3. 调试模式（按 P 截图并自动标注；按 Q 退出）")
+        print("4. 退出脚本")
         print("==================================")
-        choice = input("请输入选项 [1/2/3]：").strip()
+        choice = input("请输入选项 [1/2/3/4]：").strip()
         if choice == "1":
             do_calibration_interactive()
         elif choice == "2":
             start_fishing()
         elif choice == "3":
+            debug_mode()
+        elif choice == "4":
             print("再见。")
             break
         else:

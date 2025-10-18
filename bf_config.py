@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 所有可调参数集中在此。修改后无需改动主程序。
-注：坐标为“屏幕绝对坐标”，默认适配 1920×1080 全屏（游戏窗口左上角在 (0,0)）。
-若分辨率/窗口位置不同，请自行重新取点填入。
+注：坐标为“屏幕绝对坐标”，默认适配电脑屏幕分辨率1920×1080 且游戏全屏。
+若分辨率/窗口位置不同，请校准。
 """
 
 from dataclasses import dataclass, field
@@ -19,7 +19,7 @@ class Keys:
     abort_wait: str = 'esc'
     # 暂停/继续（随时可按，默认 'p'）
     pause_toggle: str = 'p'
-    # 【新增】显示/隐藏左下角日志框
+    # 显示/隐藏左下角日志框
     overlay_toggle: str = 'o'
 
 # ---------------------- 坐标配置（绝对坐标，单位：像素） ----------------------
@@ -27,26 +27,26 @@ class Keys:
 class Coords:
     # 张力盘（拉力盘）四点，基于 1920×1080
     tick_coords: Dict[int, Tuple[int, int]] = field(default_factory=lambda: {
-        1: (808, 1016),  # Z1
-        2: (872, 952),  # Z2
-        3: (961, 929),  # Z3
-        4: (1048, 951),  # Z4
+        1: (833, 951),  # Z1
+        2: (887, 897),  # Z2
+        3: (960, 877),  # Z3
+        4: (1034, 896),  # Z4
     })
     # 鱼桶“可见”判定（上 2 黄、下 2 米白）
     bucket_coords: Dict[str, List[Tuple[int, int]]] = field(default_factory=lambda: {
         "top": [
-            (1479, 336),
-            (1768, 337),
+            (1418, 383),
+            (1623, 379),
         ],
         "bottom": [
-            (1509, 848),
-            (1734, 848),
+            (1417, 809),
+            (1606, 809),
         ],
     })
     # 上鱼黄色提示框位置（2 点同时为黄）
     banner_coords: List[Tuple[int, int]] = field(default_factory=lambda: [
-        (1200, 65),
-        (1210, 153),
+        (1157, 160),
+        (1156, 229),
     ])
 
 # ---------------------- 时间/次数参数 ----------------------
@@ -127,7 +127,7 @@ class Colors:
 class Config:
     # 游戏窗口标题（用于聚焦及定位）
     title: str = "猛兽派对"
-    # 连续失败多少次后自动暂停（原逻辑为“退出”）
+    # 连续失败多少次后自动暂停
     max_fail_streak: int = 3
 
     keys: Keys = field(default_factory=Keys)
